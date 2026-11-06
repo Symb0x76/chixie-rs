@@ -39,20 +39,35 @@ Base host `https://chixie.com.cn/client_api/`. Envelope: `{status, msg, data, pa
   whole font (one call per font; 6–13 MB decrypted).
 - `user/heartbeat` req `{}` → `data:"ok"`. `ai/get_ai_account` req `{ai_type}` → xunfei keys.
 
-### Font payload format (decrypted)
+### Font payload format (decrypted, verified)
 
-Fernet key = login `backup_token` (44-char urlsafe-b64) **with its last two characters
-swapped** (`data.backup_token`). `Fernet(key).decrypt(data)` → UTF-8 JSON:
+**Key:** Fernet key = login `backup_token` (44-char urlsafe-b64) with its **last two
+characters swapped**.
 
+**Blob base64:** the `data` string is a Fernet token with **junk bytes appended after the
+`=` padding** (length %4 == 2, one `=` two chars from the end). Python's lenient
+`urlsafe_b64decode` stops at the padding; a strict decoder must cut at the end of the `=`
+run before decoding. (src/font.rs `b64_url`.)
+
+**Fernet timestamp:** decode must ignore the token timestamp — the server clock runs ahead
+of the client, so a strict future-timestamp check rejects every token. We decode Fernet
+manually (HMAC-SHA256 verify + AES-128-CBC/PKCS7, no time check); src/font.rs `fernet_decrypt`.
+
+**Glyph JSON** (`~6900` chars per CJK font):
 ```
-{ "<char>": [advance_width, stroke, stroke, ...], ... }   # ~6900 chars per CJK font
-stroke = [[x0,x1,...], [y0,y1,...]]    # polyline, one pen-down pass
+{ "<char>": [advance_width, X, Y], ... }
 ```
+`X` and `Y` are parallel coordinate containers, NOT strokes:
+- flat number arrays → one pen-down polyline: points = zip(X, Y);
+- arrays-of-arrays → one stroke per inner array: stroke i = zip(X[i], Y[i]).
 
-Coordinates are a small float grid (cell ≈ 0..7 units, y downward); `advance_width` in the
-same units. Pen goes down at a stroke's first point, up at its last. `mixing_ratio` /
-`default_load_size` from the font listing scale and blend glyphs. Captured raw font JSON
-(user's licensed data, with a live session token) stays out of the repo.
+Coordinates are a small float grid (cell ≈ 0..7.7 units, **y downward**); `advance_width`
+in the same units. Handwriting fonts (手写字体) draw a whole character as few/one continuous
+stroke. A third sub-array sometimes present in older captures is unused. `mixing_ratio` /
+`default_load_size` from the font listing scale/blend glyphs. Raw font JSON and live tokens
+stay out of the repo.
+
+Verified end to end: `write "你好A7"` → legible handwriting pen paths (X 0..51mm at scale 3).
 
 ## Fonts (endpoint names)
 

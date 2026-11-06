@@ -49,7 +49,12 @@ enum Cmd {
     Write {
         text: String,
         #[arg(long)]
-        font_id: i64,
+        font_id: Option<i64>,
+        /// Offline: decode a font from a saved encrypted blob + key file instead of login
+        #[arg(long, requires = "key_file")]
+        blob_file: Option<PathBuf>,
+        #[arg(long)]
+        key_file: Option<PathBuf>,
         #[arg(long)]
         out: Option<PathBuf>,
         /// mm per glyph unit (character size); calibrate against a captured .gcode
@@ -141,10 +146,20 @@ fn main() -> chixie_rs::Result<()> {
                 println!("{}\t{}\t{} chars", f.id, f.font_name, f.character_number);
             }
         }
-        Cmd::Write { text, font_id, out, scale, port, ip } => {
-            let c = api_login()?;
-            let font = c.font(font_id)?;
-            eprintln!("font {font_id}: {} glyphs", font.glyphs.len());
+        Cmd::Write { text, font_id, blob_file, key_file, out, scale, port, ip } => {
+            let font = match (blob_file, key_file) {
+                (Some(bf), Some(kf)) => {
+                    let blob = std::fs::read_to_string(bf)?;
+                    let key = std::fs::read_to_string(kf)?;
+                    chixie_rs::font::Font::from_encrypted(blob.trim(), key.trim())?
+                }
+                _ => {
+                    let id = font_id.ok_or_else(|| chixie_rs::Error::Api("--font-id required".into()))?;
+                    let c = api_login()?;
+                    c.font(id)?
+                }
+            };
+            eprintln!("font: {} glyphs", font.glyphs.len());
             let params = writing::WritingParams { mm_per_unit: scale, ..Default::default() };
             let gcode = writing::text_to_gcode(&text, &font, &params);
             match &out {

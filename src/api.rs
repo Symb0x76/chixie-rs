@@ -91,7 +91,6 @@ impl Client {
         let l = self.login.as_ref().ok_or_else(|| Error::Api("not logged in".into()))?;
         let body = serde_json::json!({ "font_id": font_id, "token": l.token });
         let blob: String = self.post("font/get_font_access", &body)?;
-        let key = Font::key_from_backup_token(&l.backup_token);
-        Font::from_encrypted(&blob, &key)
+        Font::from_encrypted_with_backup_token(&blob, &l.backup_token)
     }
 }

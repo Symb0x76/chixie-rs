@@ -7,7 +7,66 @@
 
 use std::collections::HashMap;
 
+use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
 use crate::{Error, Result};
+
+/// Decode urlsafe base64 the way Python's `urlsafe_b64decode` does for these payloads:
+/// the server appends junk after the `=` padding, so cut at the first `=` (a base64 data
+/// terminator) and decode up to it. Without a `=`, decode unpadded.
+fn b64_url(s: &str) -> Option<Vec<u8>> {
+    let t = s.trim();
+    match t.find('=') {
+        Some(i) => {
+            // Keep the whole padding run (one or two '='); junk follows it.
+            let b = t.as_bytes();
+            let mut j = i;
+            while b.get(j) == Some(&b'=') {
+                j += 1;
+            }
+            base64::engine::general_purpose::URL_SAFE.decode(&t[..j]).ok()
+        }
+        None => base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(t).ok(),
+    }
+}
+
+/// Decrypt a Fernet token manually: version → HMAC-SHA256 verify → AES-128-CBC/PKCS7.
+/// Timestamp is intentionally ignored (the server clock may run ahead of this machine).
+/// Stage-specific errors make failures diagnosable.
+pub fn fernet_decrypt(token: &str, key: &str) -> Result<Vec<u8>> {
+    let kb = b64_url(key).ok_or_else(|| Error::Font("key: bad base64".into()))?;
+    if kb.len() != 32 {
+        return Err(Error::Font(format!("key: {} bytes, need 32", kb.len())));
+    }
+    let tb = b64_url(token).ok_or_else(|| Error::Font("token: bad base64".into()))?;
+    if tb.len() < 1 + 8 + 16 + 32 {
+        return Err(Error::Font(format!("token: too short ({} bytes)", tb.len())));
+    }
+    if tb[0] != 0x80 {
+        return Err(Error::Font(format!("token: version {:#x}, need 0x80", tb[0])));
+    }
+    let (sign_key, enc_key) = kb.split_at(16);
+    let hmac_at = tb.len() - 32;
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(sign_key).expect("hmac any key len");
+    mac.update(&tb[..hmac_at]);
+    mac.verify_slice(&tb[hmac_at..])
+        .map_err(|_| Error::Font("hmac mismatch (wrong key)".into()))?;
+
+    let iv: [u8; 16] = tb[9..25].try_into().unwrap();
+    let mut buf = tb[25..hmac_at].to_vec();
+    if buf.is_empty() || buf.len() % 16 != 0 {
+        return Err(Error::Font(format!("ciphertext not block-aligned ({})", buf.len())));
+    }
+    type Dec = cbc::Decryptor<aes::Aes128>;
+    let pt = Dec::new(enc_key.into(), (&iv).into())
+        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .map_err(|_| Error::Font("aes/pkcs7 unpad failed".into()))?;
+    Ok(pt.to_vec())
+}
 
 /// One point in glyph units (y downward).
 pub type Point = (f32, f32);
@@ -30,23 +89,49 @@ impl Font {
         self.glyphs.get(&c)
     }
 
-    /// Build the Fernet key from the login `backup_token`: the client swaps the last two chars.
-    pub fn key_from_backup_token(backup_token: &str) -> String {
-        let mut c: Vec<char> = backup_token.chars().collect();
+    /// Candidate Fernet keys derived from the login `backup_token`. The server ships the
+    /// 44-char urlsafe-b64 key with its `=` padding shifted off the end (obfuscation); the
+    /// client restores it. Observed fix is swapping the last two chars, but the exact
+    /// position can vary, so try a few normalizations and let HMAC pick the right one.
+    pub fn key_candidates(backup_token: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let c: Vec<char> = backup_token.chars().collect();
         let n = c.len();
         if n >= 2 {
-            c.swap(n - 1, n - 2);
+            let mut swapped = c.clone();
+            swapped.swap(n - 1, n - 2);
+            out.push(swapped.into_iter().collect());
         }
-        c.into_iter().collect()
+        // Move a misplaced '=' to the end (handles padding anywhere near the tail).
+        if backup_token.contains('=') {
+            out.push(format!("{}=", backup_token.replace('=', "")));
+        }
+        out.push(backup_token.to_string()); // raw, in case no obfuscation
+        out
+    }
+
+    /// Back-compat: the first (most likely) key candidate.
+    pub fn key_from_backup_token(backup_token: &str) -> String {
+        Self::key_candidates(backup_token).into_iter().next().unwrap_or_default()
     }
 
     /// Decrypt a raw `get_font_access` payload with the derived key, then parse.
     pub fn from_encrypted(blob: &str, key: &str) -> Result<Self> {
-        let f = fernet::Fernet::new(key).ok_or_else(|| Error::Font("bad fernet key".into()))?;
-        let plain = f
-            .decrypt(blob)
-            .map_err(|_| Error::Font("fernet decrypt failed".into()))?;
+        let plain = fernet_decrypt(blob, key)?;
         Self::from_json(&plain)
+    }
+
+    /// Decrypt by trying each key candidate derived from the backup_token.
+    pub fn from_encrypted_with_backup_token(blob: &str, backup_token: &str) -> Result<Self> {
+        let mut tried = 0;
+        for key in Self::key_candidates(backup_token) {
+            tried += 1;
+            if let Ok(plain) = fernet_decrypt(blob, &key) {
+                log::debug!("font decrypt ok with key candidate {tried}");
+                return Self::from_json(&plain);
+            }
+        }
+        Err(Error::Font(format!("fernet decrypt failed ({tried} key candidates tried)")))
     }
 
     /// Parse the decrypted UTF-8 JSON glyph map.
@@ -71,25 +156,39 @@ fn one_char(s: &str) -> Option<char> {
     it.next().is_none().then_some(c)
 }
 
+/// Glyph JSON is `[advance, X, Y]`. X and Y are parallel coordinate containers:
+/// either flat number arrays (one stroke) or arrays-of-arrays (one entry per stroke).
 fn parse_glyph(parts: &[serde_json::Value]) -> Option<Glyph> {
     let advance = parts.first()?.as_f64()? as f32;
-    let mut strokes = Vec::with_capacity(parts.len().saturating_sub(1));
-    for s in &parts[1..] {
-        if let Some(pts) = parse_stroke(s).filter(|p| !p.is_empty()) {
-            strokes.push(pts);
+    let (Some(x), Some(y)) = (parts.get(1), parts.get(2)) else {
+        return Some(Glyph { advance, strokes: vec![] });
+    };
+    let (xa, ya) = (x.as_array()?, y.as_array()?);
+    let mut strokes = Vec::new();
+    match xa.first() {
+        // Flat: X = [x0, x1, ...]  -> a single polyline.
+        Some(v) if v.is_number() => {
+            if let Some(s) = zip_points(xa, ya) {
+                strokes.push(s);
+            }
         }
+        // Nested: X = [[..],[..]], one inner array per stroke.
+        Some(_) => {
+            for (xi, yi) in xa.iter().zip(ya.iter()) {
+                if let (Some(xs), Some(ys)) = (xi.as_array(), yi.as_array())
+                    && let Some(s) = zip_points(xs, ys).filter(|p| !p.is_empty())
+                {
+                    strokes.push(s);
+                }
+            }
+        }
+        None => {}
     }
     Some(Glyph { advance, strokes })
 }
 
-/// `[xs, ys]` → points; `None` if the shape is wrong so the caller can skip just this stroke.
-fn parse_stroke(s: &serde_json::Value) -> Option<Vec<Point>> {
-    let arr = s.as_array()?;
-    if arr.len() != 2 {
-        return None;
-    }
-    let xs = arr[0].as_array()?;
-    let ys = arr[1].as_array()?;
+/// Pair two coordinate arrays into points, truncating to the shorter.
+fn zip_points(xs: &[serde_json::Value], ys: &[serde_json::Value]) -> Option<Vec<Point>> {
     let n = xs.len().min(ys.len());
     let mut pts = Vec::with_capacity(n);
     for i in 0..n {
@@ -108,18 +207,31 @@ mod tests {
     }
 
     #[test]
-    fn parses_glyph_map_and_skips_garbage() {
+    fn decrypts_python_fernet_token() {
+        // Generated by pyca/cryptography Fernet; proves the Rust crate is cross-compatible.
+        let key = "eYATO4_NrVMGe-hK54eMCMBPlyqXwQEOBAoQNQE7rY0=";
+        let token = "gAAAAABq7Z1-Iyw8Zr0Cwd-oMu7e7s3t8acrzEafFSdLadD4XwXcKbiObWfMwzLOOSMMu8XxprTcoJzi8XcOIv_Wq_E3otmU2g==";
+        let plain = fernet_decrypt(token, key).expect("decrypt python token");
+        assert_eq!(String::from_utf8(plain).unwrap(), "héllo-stroke");
+    }
+
+    #[test]
+    fn parses_flat_and_nested_glyphs() {
+        // I: flat single stroke (X,Y are number arrays). A: nested, two strokes.
         let json = br#"{
-            "A": [2.5, [[0.0,1.0],[7.0,0.0]], [[1.0],[3.0]]],
-            "multi": [1.0, [[0.0],[0.0]]],
-            "B": [1.0, "oops"]
+            "I": [1.0, [0.0, 0.0], [0.0, 7.0]],
+            "A": [2.5, [[0.0,1.0],[2.0]], [[7.0,0.0],[3.0]]],
+            "two": [1.0, [0.0], [0.0]]
         }"#;
         let f = Font::from_json(json).unwrap();
-        assert_eq!(f.glyphs.len(), 2); // "multi" key skipped, "A" and "B" kept
+        assert_eq!(f.glyphs.len(), 2); // multi-char key "two" skipped
+        let i = f.get('I').unwrap();
+        assert_eq!(i.strokes.len(), 1);
+        assert_eq!(i.strokes[0], vec![(0.0, 0.0), (0.0, 7.0)]);
         let a = f.get('A').unwrap();
         assert_eq!(a.advance, 2.5);
         assert_eq!(a.strokes.len(), 2);
         assert_eq!(a.strokes[0], vec![(0.0, 7.0), (1.0, 0.0)]);
-        assert!(f.get('B').unwrap().strokes.is_empty()); // bad stroke dropped, glyph kept
+        assert_eq!(a.strokes[1], vec![(2.0, 3.0)]);
     }
 }
