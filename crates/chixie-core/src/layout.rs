@@ -8,7 +8,9 @@
 //! order of the original `writing::text_to_gcode`, so its output stays byte-identical. The golden
 //! test and the `legacy` oracle below check this; don't reorder the math.
 
+use crate::deformation::Deformation;
 use crate::font::Font;
+use crate::handwriting::{HandwritingStyle, Jitter, Rng, is_cjk};
 
 /// One pen-down polyline in machine mm.
 pub type Stroke = Vec<(f32, f32)>;
@@ -48,6 +50,9 @@ pub struct PageParams {
     pub origin: (f32, f32),
     /// `None`: one unbounded page (CLI default). `Some`: wrap at `width`, new page past `height`.
     pub page: Option<PageBox>,
+    /// Handwriting jitter. When enabled it replaces `char_spacing` and `space_width`.
+    pub style: HandwritingStyle,
+    pub deformation: Deformation,
 }
 
 impl Default for PageParams {
@@ -59,19 +64,32 @@ impl Default for PageParams {
             line_height: 10.0,
             origin: (0.0, 0.0),
             page: None,
+            style: HandwritingStyle::default(),
+            deformation: Deformation::default(),
         }
     }
 }
 
-/// Lay out `text` with `font`. Unknown characters advance by `space_width` and are listed in
+/// Lay out `text` with `font`. Unknown characters advance like a space and are listed in
 /// `Document::missing`.
+///
+/// With jitter and deformation off, every coordinate uses the original expressions (see module
+/// docs). With them on, values are drawn in text order from the style's seed: line start offset,
+/// then per glyph spacing / space width, vertical offset, and deformation.
 pub fn layout(text: &str, font: &Font, p: &PageParams) -> Document {
     let s = p.mm_per_unit;
     let (ox, oy) = p.origin;
+    let jitter_on = p.style.enabled;
+    let deform_on = p.deformation.is_active();
+    let mut jit = Jitter::new(&p.style);
+    // Separate stream so turning deformation on doesn't reshuffle the jitter (and vice versa).
+    let mut drng = Rng::new(p.style.seed ^ 0xD3F0_12A7_5EED_0001);
+
     let mut doc = Document::default();
     let mut page = Page::default();
     let mut cx = 0.0f32; // cursor x in mm, relative to origin
     let mut line_top = 0.0f32; // mm below origin for the current line
+    let mut prev: Option<char> = None;
 
     let newline = |cx: &mut f32, line_top: &mut f32, page: &mut Page, doc: &mut Document| {
         *cx = 0.0;
@@ -83,16 +101,32 @@ pub fn layout(text: &str, font: &Font, p: &PageParams) -> Document {
             *line_top = 0.0;
         }
     };
+    // Start-of-line jitter (every line, per captures) and paragraph indent (first line only).
+    let start_line = |cx: &mut f32, jit: &mut Jitter, paragraph: bool| {
+        if jitter_on {
+            *cx = jit.line_start();
+            if paragraph && let Some(indent) = p.style.first_line_indent {
+                *cx += indent.sample(jit.rng());
+            }
+        }
+    };
+    start_line(&mut cx, &mut jit, true);
 
     for ch in text.chars() {
         match ch {
             '\n' => {
                 newline(&mut cx, &mut line_top, &mut page, &mut doc);
+                start_line(&mut cx, &mut jit, true);
+                prev = None;
                 continue;
             }
             ' ' => {
-                cx += font.get(' ').map(|gl| gl.advance * s).unwrap_or(p.space_width);
-                cx += p.char_spacing;
+                if jitter_on {
+                    cx += jit.space(prev);
+                } else {
+                    cx += font.get(' ').map(|gl| gl.advance * s).unwrap_or(p.space_width);
+                    cx += p.char_spacing;
+                }
                 continue;
             }
             _ => {}
@@ -101,7 +135,12 @@ pub fn layout(text: &str, font: &Font, p: &PageParams) -> Document {
             if !doc.missing.contains(&ch) {
                 doc.missing.push(ch);
             }
-            cx += p.space_width + p.char_spacing;
+            if jitter_on {
+                cx += jit.space(Some(ch));
+            } else {
+                cx += p.space_width + p.char_spacing;
+            }
+            prev = Some(ch);
             continue;
         };
         // Wrap before a glyph that would cross the right edge (never on an empty line).
@@ -110,16 +149,32 @@ pub fn layout(text: &str, font: &Font, p: &PageParams) -> Document {
             && cx + glyph.advance * s > b.width
         {
             newline(&mut cx, &mut line_top, &mut page, &mut doc);
+            start_line(&mut cx, &mut jit, false);
         }
-        for stroke in &glyph.strokes {
-            page.strokes.push(
-                stroke
-                    .iter()
-                    .map(|&(gx, gy)| (ox + cx + gx * s, oy - (line_top + gy * s)))
-                    .collect(),
-            );
+        if !jitter_on && !deform_on {
+            for stroke in &glyph.strokes {
+                page.strokes.push(
+                    stroke
+                        .iter()
+                        .map(|&(gx, gy)| (ox + cx + gx * s, oy - (line_top + gy * s)))
+                        .collect(),
+                );
+            }
+            cx += glyph.advance * s + p.char_spacing;
+        } else {
+            let voff = if jitter_on { jit.vertical() } else { 0.0 };
+            let strokes = p.deformation.apply(&glyph.strokes, is_cjk(ch), s, &mut drng);
+            for stroke in &strokes {
+                page.strokes.push(
+                    stroke
+                        .iter()
+                        .map(|&(gx, gy)| (ox + cx + gx * s, oy - (line_top + voff + gy * s)))
+                        .collect(),
+                );
+            }
+            cx += glyph.advance * s + if jitter_on { jit.spacing(ch) } else { p.char_spacing };
         }
-        cx += glyph.advance * s + p.char_spacing;
+        prev = Some(ch);
     }
     doc.pages.push(page);
     doc
@@ -235,6 +290,70 @@ mod tests {
         let p = PageParams { origin: (0.0, 100.0), line_height: 10.0, ..Default::default() };
         let doc = layout(".\n.", &font_with('.', g), &p);
         assert_eq!(doc.pages[0].strokes, vec![vec![(0.0, 100.0)], vec![(0.0, 90.0)]]);
+    }
+
+    fn jitter_params(seed: u64) -> PageParams {
+        PageParams {
+            style: HandwritingStyle { enabled: true, seed, ..Default::default() },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn jitter_is_seeded_and_bounded() {
+        // '.' is one point at (0.6, 6.9), advance 1.25 (fixture font); en spacing 0.5–1.0.
+        let font = Font::from_json(FIXTURE).unwrap();
+        let text = "....\n....";
+        let a = layout(text, &font, &jitter_params(1));
+        assert_eq!(a, layout(text, &font, &jitter_params(1)));
+        assert_ne!(a, layout(text, &font, &jitter_params(2)));
+
+        let pts: Vec<(f32, f32)> = a.pages[0].strokes.iter().map(|s| s[0]).collect();
+        for line in pts.chunks(4) {
+            // Line start offset 0–2 mm on every line.
+            assert!((0.6..=2.6 + 1e-4).contains(&line[0].0), "start {}", line[0].0);
+            for w in line.windows(2) {
+                let adv = w[1].0 - w[0].0;
+                assert!((1.75 - 1e-4..=2.25 + 1e-4).contains(&adv), "advance {adv}");
+            }
+        }
+        // Vertical offset 0–0.3 below each line's nominal y (6.9 on line 0, 16.9 on line 1).
+        for (i, p) in pts.iter().enumerate() {
+            let nominal = if i < 4 { -6.9 } else { -16.9 };
+            let off = nominal - p.1;
+            assert!((-1e-4..=0.3 + 1e-4).contains(&off), "offset {off}");
+        }
+    }
+
+    #[test]
+    fn deformation_alone_is_seeded_and_changes_strokes() {
+        let font = Font::from_json(FIXTURE).unwrap();
+        let p = PageParams {
+            deformation: Deformation { enabled: true, base: true, ..Default::default() },
+            ..Default::default()
+        };
+        let plain = layout("你好", &font, &PageParams::default());
+        let d1 = layout("你好", &font, &p);
+        assert_ne!(plain, d1);
+        assert_eq!(d1, layout("你好", &font, &p));
+        // Jitter stays off: same stroke count, no extra spacing.
+        assert_eq!(plain.pages[0].strokes.len(), d1.pages[0].strokes.len());
+    }
+
+    #[test]
+    fn first_line_indent_only_on_paragraph_starts() {
+        let font = Font::from_json(FIXTURE).unwrap();
+        let mut p = jitter_params(4);
+        p.style.line_start_offset = crate::handwriting::Span::new(0.0, 0.0);
+        p.style.first_line_indent = Some(crate::handwriting::Span::new(10.0, 10.0));
+        // 12.8 mm wide: after the 10 mm indent one dot fits (10 + 1.25), the second wraps
+        // (cursor ≥ 11.75 + 1.25 > 12.8).
+        p.page = Some(PageBox { width: 12.8, height: 100.0 });
+        let doc = layout("..\n.", &font, &p);
+        let xs: Vec<f32> = doc.pages[0].strokes.iter().map(|s| s[0].0).collect();
+        // Paragraph start indented, wrapped line not, next paragraph indented again.
+        let want = [10.6, 0.6, 10.6];
+        assert!(xs.iter().zip(want).all(|(x, w)| (x - w).abs() < 1e-4), "{xs:?}");
     }
 
     #[test]

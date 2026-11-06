@@ -28,3 +28,28 @@ fn writing_matches_pre_refactor_golden() {
     let expected = std::fs::read_to_string(&golden).expect("golden missing; run with BLESS=1 once");
     assert_eq!(out, expected);
 }
+
+/// Fixed-seed snapshot with jitter + base + shape deformation on. Created after the effects
+/// landed (it is NOT pre-refactor output); it pins the RNG stream and the effect math.
+#[test]
+fn styled_output_is_stable() {
+    use chixie_core::deformation::Deformation;
+    use chixie_core::handwriting::HandwritingStyle;
+
+    let font = Font::from_json(&std::fs::read(fixture("font_fixture.json")).unwrap()).unwrap();
+    let p = PageParams {
+        mm_per_unit: 1.0,
+        origin: (0.0, 0.0),
+        style: HandwritingStyle { enabled: true, seed: 1, ..Default::default() },
+        deformation: Deformation { enabled: true, base: true, shape: true, ..Default::default() },
+        ..Default::default()
+    };
+    let out = emit_document(&layout(TEXT, &font, &p), &DeviceProfile::default());
+
+    let golden = fixture("golden_styled_seed1.gcode");
+    if std::env::var_os("BLESS").is_some() {
+        std::fs::write(&golden, &out).unwrap();
+    }
+    let expected = std::fs::read_to_string(&golden).expect("golden missing; run with BLESS=1 once");
+    assert_eq!(out, expected);
+}

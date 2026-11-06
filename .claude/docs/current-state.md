@@ -1,19 +1,23 @@
-# Current state — chixie-rs (2026-11-06)
+# Current state — chixie-rs (2026-11-07)
 
 ## Status
-- GUI rewrite plan approved: gpui-kit (gpui-component) desktop client in a three-crate workspace.
-  Plan file: `C:\Users\Symb0x76\.claude\plans\d-projects-rust-chixie-rs-docs-handoff-fluttering-iverson.md`.
-- M0 done and committed (afafaba): workspace, golden, gpui spike.
-- M2 partial: `layout.rs` + `gcode.rs` (byte-exact vs golden + legacy oracle), Grbl
-  pause/realtime/status, `device.rs` actor. 26 core tests + golden pass, clippy clean.
-- M1 capture path found: ChiXie3 has an Export G-code button (visibility gate unknown).
+- Plan: `C:\Users\Symb0x76\.claude\plans\d-projects-rust-chixie-rs-docs-handoff-fluttering-iverson.md`.
+- M0 done: workspace, golden, gpui-kit spike.
+- M1 done: calibration (mm/unit = size/100) plus jitter, deformation and multi-line layout rules,
+  all captured from ChiXie3 via a fake Grbl. See docs/protocol.md and memory `chixie3-capture-method`.
+- M2 mostly done:
+  - layout/gcode split; Grbl pause/status; device actor;
+  - calibration; handwriting jitter; deformation; style TOML; CLI flags.
+- Tests: 44 core + 2 goldens; clippy clean.
 
-## Known issues / unverified on hardware
-- `?` polling during streams, stop sequence (`!` → hold → `0x18` → `$X` → pen up), USB-drop path.
-- Preview pan/zoom in the spike not exercised automatically.
-- MSVC `linker_messages` warning (cosmetic).
+## Open / VERIFY
+- Space width; wrap rule (glyph origin vs right edge); first-line indent mode; `row_offset_style`
+  variants.
+- Exact deformation stroke-shift and shape-noise formulas.
+- On hardware: `?` polling while streaming, the stop sequence, the USB-drop path.
+- ChiXie3's Telnet stalls on long jobs, so keep capture jobs short.
 
 ## Next
-- BOSS: find Export G-code in ChiXie3, export capture A (effects off) + captures B; or the caliper fallback.
-- Hardware smoke: `chixie stream` a small file, then device actor stop/pause on the plotter.
-- M2 rest: calibration, handwriting, deformation, config/keyring, CLI flags (after M1 semantics).
+- M2 rest: `config.rs` (TOML settings under %APPDATA%), `credentials.rs` (keyring), API
+  logout/heartbeat.
+- M3: GUI shell, login, fonts.

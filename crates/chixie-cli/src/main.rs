@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chixie_core::{api, calibration, discovery, esp3d, gcode, grbl, layout, transport};
+use chixie_core::{api, calibration, discovery, esp3d, gcode, grbl, handwriting, layout, transport};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -11,6 +11,8 @@ struct Cli {
     cmd: Cmd,
 }
 
+// Parsed once per process; boxing `Write`'s many flags would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     /// List serial ports
@@ -63,13 +65,31 @@ enum Cmd {
         /// Offline: decode a font from a saved encrypted blob + key file instead of login
         #[arg(long, requires = "key_file")]
         blob_file: Option<PathBuf>,
+        /// Offline: an already-decrypted glyph JSON file (e.g. the test fixture)
+        #[arg(long, conflicts_with_all = ["blob_file", "font_id"])]
+        font_json: Option<PathBuf>,
         #[arg(long)]
         key_file: Option<PathBuf>,
         #[arg(long)]
         out: Option<PathBuf>,
-        /// mm per glyph unit (character size); calibrate against a captured .gcode
+        /// mm per glyph unit (character size). Prefer --font-size, which uses the calibrated rule.
         #[arg(long, default_value_t = 1.0)]
         scale: f32,
+        /// ChiXie3 font size; sets mm per unit = size / 100 (verified by capture). Overrides --scale.
+        #[arg(long)]
+        font_size: Option<f32>,
+        /// Handwriting/deformation profile (TOML). Write a template with `chixie style-template`.
+        #[arg(long)]
+        style: Option<PathBuf>,
+        /// Override the style's random seed (same seed = same page)
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Force handwriting jitter off, even if the style enables it
+        #[arg(long)]
+        no_jitter: bool,
+        /// Force base character deformation on (style ranges, or ChiXie3 defaults)
+        #[arg(long)]
+        deform: bool,
         /// Page origin in mm (machine coords). Y is the top; glyphs descend from it.
         #[arg(long, default_value_t = 0.0)]
         origin_x: f32,
@@ -96,6 +116,8 @@ enum Cmd {
         #[arg(long, default_value_t = 2.0)]
         pen_down_z: f32,
     },
+    /// Print a style profile (ChiXie3 defaults, jitter on, deformation off) for `write --style`
+    StyleTemplate,
 }
 
 fn api_login() -> chixie_core::Result<api::Client> {
@@ -206,6 +228,12 @@ fn main() -> chixie_core::Result<()> {
             }
             eprintln!("{printed} fonts");
         }
+        Cmd::StyleTemplate => {
+            let mut s = handwriting::StyleFile::default();
+            s.handwriting.enabled = true;
+            s.handwriting.seed = 1;
+            print!("{}", s.to_toml());
+        }
         Cmd::Calibrate { capture, text, font_id, pen_down_z } => {
             let strokes = calibration::parse_strokes(&std::fs::read_to_string(capture)?, pen_down_z);
             let font = api_login()?.font(font_id)?;
@@ -221,8 +249,13 @@ fn main() -> chixie_core::Result<()> {
                 println!("{}\t{:.3}\t{:.3}\t{adv}\t{:.4}", p.ch, p.offset.0, p.offset.1, p.rms);
             }
         }
-        Cmd::Write { text, font_id, blob_file, key_file, out, scale, origin_x, origin_y, zero, port, ip } => {
+        Cmd::Write {
+            text, font_id, blob_file, key_file, font_json, out, scale, font_size, style, seed, no_jitter, deform, origin_x, origin_y, zero, port, ip,
+        } => {
             let font = match (blob_file, key_file) {
+                _ if font_json.is_some() => {
+                    chixie_core::font::Font::from_json(&std::fs::read(font_json.as_deref().unwrap())?)?
+                }
                 (Some(bf), Some(kf)) => {
                     let blob = std::fs::read_to_string(bf)?;
                     let key = std::fs::read_to_string(kf)?;
@@ -235,9 +268,13 @@ fn main() -> chixie_core::Result<()> {
                 }
             };
             eprintln!("font: {} glyphs", font.glyphs.len());
+            let file = style.as_deref().map(handwriting::StyleFile::load).transpose()?;
+            let resolved = handwriting::resolve(file, seed, no_jitter, deform);
             let params = layout::PageParams {
-                mm_per_unit: scale,
+                mm_per_unit: font_size.map(calibration::mm_per_unit_for_font_size).unwrap_or(scale),
                 origin: (origin_x, origin_y),
+                style: resolved.handwriting,
+                deformation: resolved.deformation,
                 ..Default::default()
             };
             let doc = layout::layout(&text, &font, &params);

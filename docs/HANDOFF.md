@@ -67,6 +67,30 @@ GUI plan: `C:\Users\Symb0x76\.claude\plans\d-projects-rust-chixie-rs-docs-handof
   - 6 tests run against `grbl::fake::Fake`. **Not hardware-tested:** stop/reset sequence, `?`
     during streaming, USB-drop path.
 
+## Handwriting engine (2026-11-07)
+- **Calibration done:** mm/unit = font size ÷ 100. Effects are absolute mm. All ChiXie3 capture
+  findings are in docs/protocol.md.
+- `handwriting.rs`:
+  - SplitMix64 `Rng` (stream pinned by a test; seeds are persisted).
+  - `Span{min,max}` inclusive ranges and `HandwritingStyle` with the ChiXie3 defaults.
+  - `Jitter`: per-line start offset, spacing, space width and vertical offset, drawn in text order.
+  - `StyleFile` (TOML) and `resolve()` for precedence: defaults < style file < `--seed` <
+    `--no-jitter` / `--deform`.
+- `deformation.rs`:
+  - Base: per-glyph scale %, rotation °, per-stroke shift.
+  - Shape: CJK-only slant + smooth noise.
+  - The stroke-shift and noise forms are matched to the captured magnitudes and marked VERIFY.
+- `layout()`:
+  - Effects off → the original expressions (the pre-refactor golden and the legacy oracle still
+    pass).
+  - Effects on → a separate branch. Jitter and deformation use separate RNG streams, so toggling
+    one doesn't reshuffle the other.
+  - The fixed-seed snapshot is `tests/fixtures/golden_styled_seed1.gcode`.
+- CLI `write` gained `--font-size`, `--style`, `--seed`, `--no-jitter`, `--deform`, and offline
+  `--font-json`. There is also a new `chixie style-template`.
+- End-to-end checks: the default CLI output == the pre-refactor golden; `--font-size 300` ==
+  `--scale 3`; the precedence cases hold.
+
 Modules (`crates/chixie-core/src/`; CLI is `crates/chixie-cli/src/main.rs`):
 - `transport.rs` — serial + telnet line links, CH340/GD32 port auto-detect.
 - `grbl.rs` — char-counting streamer, error/alarm/cancel, realtime cmds.

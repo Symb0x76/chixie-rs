@@ -3,12 +3,14 @@
 
 pub mod api;
 pub mod calibration;
+pub mod deformation;
 pub mod device;
 pub mod discovery;
 pub mod esp3d;
 pub mod font;
 pub mod gcode;
 pub mod grbl;
+pub mod handwriting;
 pub mod layout;
 pub mod transport;
 
