@@ -60,6 +60,14 @@ enum Cmd {
         /// mm per glyph unit (character size); calibrate against a captured .gcode
         #[arg(long, default_value_t = 1.0)]
         scale: f32,
+        /// Page origin in mm (machine coords). Y is the top; glyphs descend from it.
+        #[arg(long, default_value_t = 0.0)]
+        origin_x: f32,
+        #[arg(long, default_value_t = 24.0)]
+        origin_y: f32,
+        /// Prepend `G92 X0 Y0` to zero work coords at the pen's current position.
+        #[arg(long)]
+        zero: bool,
         #[arg(long)]
         port: Option<String>,
         #[arg(long)]
@@ -146,7 +154,7 @@ fn main() -> chixie_rs::Result<()> {
                 println!("{}\t{}\t{} chars", f.id, f.font_name, f.character_number);
             }
         }
-        Cmd::Write { text, font_id, blob_file, key_file, out, scale, port, ip } => {
+        Cmd::Write { text, font_id, blob_file, key_file, out, scale, origin_x, origin_y, zero, port, ip } => {
             let font = match (blob_file, key_file) {
                 (Some(bf), Some(kf)) => {
                     let blob = std::fs::read_to_string(bf)?;
@@ -160,8 +168,16 @@ fn main() -> chixie_rs::Result<()> {
                 }
             };
             eprintln!("font: {} glyphs", font.glyphs.len());
-            let params = writing::WritingParams { mm_per_unit: scale, ..Default::default() };
-            let gcode = writing::text_to_gcode(&text, &font, &params);
+            let params = writing::WritingParams {
+                mm_per_unit: scale,
+                origin: (origin_x, origin_y),
+                ..Default::default()
+            };
+            let mut gcode = writing::text_to_gcode(&text, &font, &params);
+            if zero {
+                // Zero work coords at the pen's current position so absolute moves are local.
+                gcode.insert_str(0, "G92 X0 Y0\n");
+            }
             match &out {
                 Some(path) => std::fs::write(path, &gcode)?,
                 None if port.is_none() && ip.is_none() => print!("{gcode}"),
