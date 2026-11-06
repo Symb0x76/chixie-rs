@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chixie_core::{api, discovery, esp3d, grbl, transport, writing};
+use chixie_core::{api, discovery, esp3d, gcode, grbl, layout, transport};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -201,12 +201,16 @@ fn main() -> chixie_core::Result<()> {
                 }
             };
             eprintln!("font: {} glyphs", font.glyphs.len());
-            let params = writing::WritingParams {
+            let params = layout::PageParams {
                 mm_per_unit: scale,
                 origin: (origin_x, origin_y),
                 ..Default::default()
             };
-            let mut gcode = writing::text_to_gcode(&text, &font, &params);
+            let doc = layout::layout(&text, &font, &params);
+            if !doc.missing.is_empty() {
+                eprintln!("missing glyphs (skipped): {}", doc.missing.iter().collect::<String>());
+            }
+            let mut gcode = gcode::emit_document(&doc, &gcode::DeviceProfile::default());
             if zero {
                 // Zero work coords at the pen's current position so absolute moves are local.
                 gcode.insert_str(0, "G92 X0 Y0\n");

@@ -5,9 +5,10 @@ pub mod api;
 pub mod discovery;
 pub mod esp3d;
 pub mod font;
+pub mod gcode;
 pub mod grbl;
+pub mod layout;
 pub mod transport;
-pub mod writing;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
