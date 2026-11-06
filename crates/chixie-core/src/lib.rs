@@ -2,6 +2,7 @@
 //! Protocol notes: `docs/protocol.md`.
 
 pub mod api;
+pub mod calibration;
 pub mod device;
 pub mod discovery;
 pub mod esp3d;

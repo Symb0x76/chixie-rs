@@ -93,3 +93,51 @@ Pause/resume/stop are Python-side (QWaitCondition), plus realtime `!` `~` `?` `0
 
 Runs `arp -a`, then for each IP `GET http://<ip>/description.xml` (UPnP,
 `urn:schemas-upnp-org:device-1-0`, reads `upnp:device` children).
+
+## Writing G-code as streamed (captured 2026-11-06)
+
+**Capture method (no hardware, no export button needed):**
+1. Run a fake Grbl that logs every line on `127.0.0.1:23`. It answers `ok` per line and an Idle
+   status to `?`.
+2. In ChiXie3, open 设备管理 → 连接与控制 → 无线 → **+** and add `127.0.0.1` port 23. Connect, then
+   press ▶ (书写).
+
+The Export G-code button (`MainWindow.set_export_gcode_btn_visible`) is gated to `super_user`. The
+fake-Grbl path works for any account. ChiXie3 runs elevated, so UI automation must run elevated too.
+
+**Format** (艾玛体, text `你好赤写 A1`, size 100):
+```
+G21
+G90
+F19000
+G1G90 Z0F19000              (pen up, twice at start)
+G1 X+4.205Y-2.376F19000     (travel: G1, not G0; signed coords, trailing zeros trimmed)
+G1G90 Z2F19000              (pen down)
+G1 X+3.887Y-3.275F19000     (write moves)
+...
+G1G90 Z0F19000              (pen up after each stroke; twice at the end)
+G90G0 X0Y0                  (return to origin)
+```
+- Origin is the pen's position at start. X grows right; Y is **negative going down** the page.
+- One captured stroke per font stroke, in font order. Consecutive repeated points are not streamed
+  (`1` has 5 font points but streams 4).
+
+**Scale (`PXScale`), verified:**
+- `chixie calibrate` against font id 1 gives mm/unit **1.00000** at size 100, RMS 0.0000.
+- A size-50 capture fits the size-100 capture at a ratio of exactly **0.50000**, with per-glyph RMS
+  ≤ 0.0004 mm.
+- ⇒ `mm_per_unit = font_size / 100` (`calibration::mm_per_unit_for_font_size`).
+
+**Handwriting effects in the default config** (deformation off, so RMS 0):
+
+| quantity | size 100 | size 50 | conclusion |
+|---|---|---|---|
+| first glyph x | 2.03 | 2.03 | absolute mm; fits `first_text_not_align_range` 2.0 |
+| glyph y offsets (你好赤写A1) | −0.276 −0.296 −0.326 −0.186 −0.206 −0.236 | same deltas | absolute mm; spread ≤ 0.3, fits `vertical_offset` 0.0–0.3 |
+| extra spacing per glyph (你/好/赤) | — | — | ≈ 1.08 / 1.04 / 0.92 mm: absolute, within zh 0.6–1.1 |
+
+- Extra spacing is solved from advance = a·(size/100) + spacing across both sizes.
+- Random values are drawn **per character when the text is laid out**, not per write. Repeated
+  writes of the same document are byte-identical. Changing font size keeps the same draws.
+- **VERIFY:** the deformation semantics. That needs a capture with `EnableCharacterDeformation` on;
+  `rms` > 0 will quantify per-point distortion.

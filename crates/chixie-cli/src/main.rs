@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chixie_core::{api, discovery, esp3d, gcode, grbl, layout, transport};
+use chixie_core::{api, calibration, discovery, esp3d, gcode, grbl, layout, transport};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -82,6 +82,19 @@ enum Cmd {
         port: Option<String>,
         #[arg(long)]
         ip: Option<String>,
+    },
+    /// Fit mm-per-glyph-unit from G-code captured from ChiXie3 (see docs/protocol.md)
+    Calibrate {
+        /// Captured G-code (one line per command, as ChiXie3 streamed it)
+        capture: PathBuf,
+        /// The exact text ChiXie3 wrote (whitespace is ignored)
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        font_id: i64,
+        /// Z value that means pen down in the capture
+        #[arg(long, default_value_t = 2.0)]
+        pen_down_z: f32,
     },
 }
 
@@ -192,6 +205,21 @@ fn main() -> chixie_core::Result<()> {
                 }
             }
             eprintln!("{printed} fonts");
+        }
+        Cmd::Calibrate { capture, text, font_id, pen_down_z } => {
+            let strokes = calibration::parse_strokes(&std::fs::read_to_string(capture)?, pen_down_z);
+            let font = api_login()?.font(font_id)?;
+            let f = calibration::fit(&strokes, &text, &font)?;
+            println!("mm_per_unit\t{:.5}", f.mm_per_unit);
+            println!("rms_mm\t{:.4}", f.rms);
+            for (ch, si, cap, fnt) in &f.skipped {
+                println!("skipped\t'{ch}' stroke {si}: capture {cap} points, font {fnt}");
+            }
+            println!("glyph\toffset_x\toffset_y\tadvance_to_next\trms");
+            for (i, p) in f.placements.iter().enumerate() {
+                let adv = f.placements.get(i + 1).map(|n| format!("{:.3}", n.offset.0 - p.offset.0)).unwrap_or_default();
+                println!("{}\t{:.3}\t{:.3}\t{adv}\t{:.4}", p.ch, p.offset.0, p.offset.1, p.rms);
+            }
         }
         Cmd::Write { text, font_id, blob_file, key_file, out, scale, origin_x, origin_y, zero, port, ip } => {
             let font = match (blob_file, key_file) {
