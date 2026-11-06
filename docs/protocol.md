@@ -170,3 +170,24 @@ residual after it. Single-stroke `1` is collinear, so its sx is unreliable.
   fit). Typed text matched the raw font at scale 1.
 
 Captures: `captures/{a2_pasted_deform_off,d_base_deform,d_shape_deform7}.gcode` (local only).
+
+**Multi-line layout (captured 2026-11-07, 艾玛体 100, effects off)**
+- Text: `你好赤写`×10 + ` A1 A1` ⏎ `写赤好你 写赤 A1` ⏎ `你 好 赤 写`.
+- ChiXie3's Telnet streaming stalls on long jobs: at ~44, ~752 and ~1682 lines, even with a 3 ms ack
+  delay. After a stall, the only reliable reset is disconnect + restart. The first 2 lines (34 glyphs)
+  were captured; every glyph fits the typed reference exactly (no per-glyph scale).
+- **Line pitch ≈ 10.25 mm** (baseline means −0.31 → −10.56).
+- **Wrap:** 23 glyphs on line 1. The last one starts at x = 161.5 and the next would start at ≈ 169.
+  That fits a writable width of ≈ 168 mm (A4 210 − 2×21). Whether the rule tests the glyph origin or
+  its right edge is **VERIFY**.
+- **Per-line start x** is random in [0, `first_text_not_align_range`=2.0] on **every** line (1.81, 1.42).
+- **Advance** = glyph advance + spacing, with spacing drawn per glyph from zh 0.6–1.1 mm (each
+  glyph pair spreads ≈ 0.5 mm: 你→好 8.46–8.86, 好→赤 7.29–7.59, 赤→写 5.65–6.01, 写→你 6.42–6.81).
+- **Vertical offset** per glyph spans ≤ 0.3 mm on each line (0.28, 0.27).
+- **First-line indent** (`min/max_first_line_indent` 15.5–17) is **not** applied here: paragraphs
+  start at the same x as wrapped lines (also visible on screen). It probably belongs to another
+  template or mode, **VERIFY**.
+- **Space width** was not captured (the stream stalled first). On screen, zh spaces look ≈ 5–7 mm,
+  consistent with `space_width_zh`; **VERIFY**.
+- The paste-vs-typed scale anomaly above did not reproduce here, where all sx = sy = 1.000. Treat it
+  as an artifact of that one paste.
