@@ -68,7 +68,18 @@ impl Client {
         if let Some(l) = &self.login {
             req = req.header("token", &l.token);
         }
-        let env: Envelope<T> = req.send()?.error_for_status()?.json()?;
+        let resp = req.send()?;
+        let code = resp.status();
+        if !code.is_success() {
+            // The backend explains 4xx failures in the envelope's `msg`; surface it.
+            let body = resp.text().unwrap_or_default();
+            let msg = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("msg").and_then(|m| m.as_str()).map(str::to_owned))
+                .unwrap_or(body);
+            return Err(Error::Api(format!("{path}: HTTP {code}: {msg}")));
+        }
+        let env: Envelope<T> = resp.json()?;
         if env.status != 200 {
             return Err(Error::Api(format!("{}: {}", path, env.msg)));
         }
