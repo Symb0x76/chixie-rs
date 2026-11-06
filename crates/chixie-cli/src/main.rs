@@ -105,6 +105,14 @@ enum SdOp {
     Status,
 }
 
+fn print_progress(e: grbl::StreamEvent) {
+    match e {
+        grbl::StreamEvent::Progress { done, total } => eprint!("\r{done}/{total}"),
+        grbl::StreamEvent::Status(_) => {}
+        grbl::StreamEvent::Message(m) => eprint!("\n{m}\n"),
+    }
+}
+
 fn open(port: Option<String>, ip: Option<String>, baud: u32) -> chixie_core::Result<Box<dyn transport::Link>> {
     Ok(match (ip, port) {
         (Some(ip), _) => Box::new(transport::open_telnet(&ip, transport::DEFAULT_TELNET_PORT)?),
@@ -142,9 +150,7 @@ fn main() -> chixie_core::Result<()> {
         Cmd::Stream { file, port, ip, baud } => {
             let text = std::fs::read_to_string(file)?;
             let mut link = open(port, ip, baud)?;
-            grbl::stream(link.as_mut(), text.lines(), &grbl::Control::default(), |d, t| {
-                eprint!("\r{d}/{t}");
-            })?;
+            grbl::stream(link.as_mut(), text.lines(), &grbl::Control::default(), print_progress)?;
             eprintln!("\ndone");
         }
         Cmd::Sd { ip, op } => {
@@ -222,9 +228,7 @@ fn main() -> chixie_core::Result<()> {
             }
             if port.is_some() || ip.is_some() {
                 let mut link = open(port, ip, transport::DEFAULT_BAUD)?;
-                grbl::stream(link.as_mut(), gcode.lines(), &grbl::Control::default(), |d, t| {
-                    eprint!("\r{d}/{t}");
-                })?;
+                grbl::stream(link.as_mut(), gcode.lines(), &grbl::Control::default(), print_progress)?;
                 eprintln!("\ndone");
             }
         }

@@ -42,6 +42,31 @@ GUI plan: `C:\Users\Symb0x76\.claude\plans\d-projects-rust-chixie-rs-docs-handof
   hand-built font fixture (`tests/fixtures/`, LF-locked by `.gitattributes`). Only regenerate it
   with `BLESS=1` on purpose.
 
+## GUI M1/M2 progress (2026-11-06)
+- **M1 capture path:** ChiXie3 is installed at `%LOCALAPPDATA%\Programs\ChiXie3\start.exe`
+  (config in `%USERPROFILE%\ChiXie3\conf`). The binary has `MainWindow.set_export_gcode_btn_visible`,
+  so there is an **Export G-code button**. What controls its visibility (role or mode?) can't be
+  recovered from strings. Next step: open ChiXie3 and look for it. If it's hidden, fall back to
+  com0com, then calipers.
+- **Layout/emit split (done):**
+  - `writing.rs` is replaced by `layout.rs` (`layout(text, &Font, &PageParams) -> Document`,
+    machine-mm strokes, `missing` chars, optional `PageBox` wrap/paging) and `gcode.rs`
+    (`emit(&Page, &DeviceProfile)`, `emit_document`).
+  - With effects off it's byte-identical to the old pipeline: the golden test passes, and the
+    `layout::legacy` oracle matches across 24 text×param combos.
+  - Remove the oracle after a hardware check; keep the golden.
+- **Grbl (done):** `Control::{pause, resume, reset, send_realtime}`, `?` polling every 250 ms
+  (`status_interval`), `GrblStatus::parse`, and `stream(.., on_event: FnMut(StreamEvent))`.
+  The CLI `stream`/`write` now also poll `?`. **Not hardware-tested yet.**
+- **Device actor (done, `device.rs`):**
+  - `spawn(opener) -> (DeviceHandle, async_channel::Receiver<Event>, JoinHandle)`.
+  - Commands: Connect/Send/Jog/Pen/Unlock/BackOrigin/Zero/Run(Job pages)/NextSheet/Stop.
+    Pause/Resume/Stop act on a shared `Control`.
+  - Stop sequence: `!` → wait for `Hold:0`/`Idle` → `0x18` → `$X` → pen up.
+  - An I/O error emits `Disconnected{page,last_line}` with no auto-resume.
+  - 6 tests run against `grbl::fake::Fake`. **Not hardware-tested:** stop/reset sequence, `?`
+    during streaming, USB-drop path.
+
 Modules (`crates/chixie-core/src/`; CLI is `crates/chixie-cli/src/main.rs`):
 - `transport.rs` — serial + telnet line links, CH340/GD32 port auto-detect.
 - `grbl.rs` — char-counting streamer, error/alarm/cancel, realtime cmds.
