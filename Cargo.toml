@@ -6,7 +6,10 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 env_logger = "0.11.11"
+fernet = { version = "0.2.2", default-features = false, features = ["rustcrypto"] }
 log = "0.4.35"
-reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "multipart", "query"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "multipart", "query", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 serialport = "4.10.1"
 thiserror = "2.0.21"

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chixie_rs::{discovery, esp3d, grbl, transport};
+use chixie_rs::{api, discovery, esp3d, grbl, transport, writing};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -43,6 +43,34 @@ enum Cmd {
         #[command(subcommand)]
         op: SdOp,
     },
+    /// List your collected fonts (login via CHIXIE_ACCOUNT / CHIXIE_PASSWORD env)
+    Fonts,
+    /// Generate writing G-code from text; print to stdout or --out, optionally stream
+    Write {
+        text: String,
+        #[arg(long)]
+        font_id: i64,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// mm per glyph unit (character size); calibrate against a captured .gcode
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+        #[arg(long)]
+        port: Option<String>,
+        #[arg(long)]
+        ip: Option<String>,
+    },
+}
+
+fn api_login() -> chixie_rs::Result<api::Client> {
+    let account = std::env::var("CHIXIE_ACCOUNT")
+        .map_err(|_| chixie_rs::Error::Api("set CHIXIE_ACCOUNT".into()))?;
+    let password = std::env::var("CHIXIE_PASSWORD")
+        .map_err(|_| chixie_rs::Error::Api("set CHIXIE_PASSWORD".into()))?;
+    let mut c = api::Client::new()?;
+    let l = c.login(&account, &password)?;
+    eprintln!("logged in as {} ({})", l.username, l.role_code);
+    Ok(c)
 }
 
 #[derive(Subcommand)]
@@ -106,6 +134,31 @@ fn main() -> chixie_rs::Result<()> {
                 SdOp::Status => b.status()?,
             };
             println!("{out}");
+        }
+        Cmd::Fonts => {
+            let c = api_login()?;
+            for f in c.collected_fonts(0)? {
+                println!("{}\t{}\t{} chars", f.id, f.font_name, f.character_number);
+            }
+        }
+        Cmd::Write { text, font_id, out, scale, port, ip } => {
+            let c = api_login()?;
+            let font = c.font(font_id)?;
+            eprintln!("font {font_id}: {} glyphs", font.glyphs.len());
+            let params = writing::WritingParams { mm_per_unit: scale, ..Default::default() };
+            let gcode = writing::text_to_gcode(&text, &font, &params);
+            match &out {
+                Some(path) => std::fs::write(path, &gcode)?,
+                None if port.is_none() && ip.is_none() => print!("{gcode}"),
+                None => {}
+            }
+            if port.is_some() || ip.is_some() {
+                let mut link = open(port, ip, transport::DEFAULT_BAUD)?;
+                grbl::stream(link.as_mut(), gcode.lines(), &grbl::Control::default(), |d, t| {
+                    eprint!("\r{d}/{t}");
+                })?;
+                eprintln!("\ndone");
+            }
         }
     }
     Ok(())

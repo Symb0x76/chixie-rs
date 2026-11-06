@@ -1,10 +1,13 @@
 //! Device communication for ChiXie writing/plotting machines.
 //! Protocol notes: `docs/protocol.md`.
 
+pub mod api;
 pub mod discovery;
 pub mod esp3d;
+pub mod font;
 pub mod grbl;
 pub mod transport;
+pub mod writing;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -18,6 +21,10 @@ pub enum Error {
     Grbl { line: usize, msg: String },
     #[error("grbl alarm: {0}")]
     Alarm(String),
+    #[error("font: {0}")]
+    Font(String),
+    #[error("api: {0}")]
+    Api(String),
     #[error("timeout waiting for device")]
     Timeout,
     #[error("cancelled")]
