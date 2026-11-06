@@ -43,8 +43,18 @@ enum Cmd {
         #[command(subcommand)]
         op: SdOp,
     },
-    /// List your collected fonts (login via CHIXIE_ACCOUNT / CHIXIE_PASSWORD env)
-    Fonts,
+    /// List fonts (login via CHIXIE_ACCOUNT / CHIXIE_PASSWORD env)
+    Fonts {
+        /// Browse the full online catalog instead of just your collected fonts
+        #[arg(long)]
+        online: bool,
+        /// Only this page. Default: all pages until empty (online is 1-based).
+        #[arg(long)]
+        page: Option<i64>,
+        /// Filter online fonts by name substring
+        #[arg(long, default_value = "")]
+        search: String,
+    },
     /// Generate writing G-code from text; print to stdout or --out, optionally stream
     Write {
         text: String,
@@ -148,11 +158,34 @@ fn main() -> chixie_rs::Result<()> {
             };
             println!("{out}");
         }
-        Cmd::Fonts => {
+        Cmd::Fonts { online, page, search } => {
             let c = api_login()?;
-            for f in c.collected_fonts(0)? {
-                println!("{}\t{}\t{} chars", f.id, f.font_name, f.character_number);
+            // Online catalog is 1-based; collected is one page (0).
+            let fetch = |p: i64| if online { c.online_fonts(p, &search) } else { c.collected_fonts(p) };
+            let mut printed = 0;
+            let mut emit = |batch: Vec<chixie_rs::api::FontInfo>| {
+                for f in &batch {
+                    println!("{}\t{}\t{} chars", f.id, f.font_name, f.character_number);
+                }
+                printed += batch.len();
+                batch.len()
+            };
+            match (page, online) {
+                (Some(p), _) => {
+                    emit(fetch(p)?);
+                }
+                (None, false) => {
+                    emit(fetch(0)?);
+                }
+                (None, true) => {
+                    for p in 1..500 {
+                        if emit(fetch(p)?) == 0 {
+                            break;
+                        }
+                    }
+                }
             }
+            eprintln!("{printed} fonts");
         }
         Cmd::Write { text, font_id, blob_file, key_file, out, scale, origin_x, origin_y, zero, port, ip } => {
             let font = match (blob_file, key_file) {

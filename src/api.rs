@@ -86,6 +86,17 @@ impl Client {
         self.post("font/get_collected_fonts", &serde_json::json!({ "page_num": page_num }))
     }
 
+    /// One page of the full online catalog. `page_num` is 1-based.
+    pub fn online_fonts(&self, page_num: i64, search: &str) -> Result<Vec<FontInfo>> {
+        let body = serde_json::json!({
+            "filter_tags": ["chinese", "english", "Japanese", "handwritten", "standard", "formula_symbol", "scribble"],
+            "sort_rule": "collections",
+            "page_num": page_num,
+            "search_name": search,
+        });
+        self.post("font/get_online_fonts", &body)
+    }
+
     /// Fetch and decrypt one font by id (requires prior login).
     pub fn font(&self, font_id: i64) -> Result<Font> {
         let l = self.login.as_ref().ok_or_else(|| Error::Api("not logged in".into()))?;
