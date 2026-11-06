@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chixie_rs::{api, discovery, esp3d, grbl, transport, writing};
+use chixie_core::{api, discovery, esp3d, grbl, transport, writing};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -85,11 +85,11 @@ enum Cmd {
     },
 }
 
-fn api_login() -> chixie_rs::Result<api::Client> {
+fn api_login() -> chixie_core::Result<api::Client> {
     let account = std::env::var("CHIXIE_ACCOUNT")
-        .map_err(|_| chixie_rs::Error::Api("set CHIXIE_ACCOUNT".into()))?;
+        .map_err(|_| chixie_core::Error::Api("set CHIXIE_ACCOUNT".into()))?;
     let password = std::env::var("CHIXIE_PASSWORD")
-        .map_err(|_| chixie_rs::Error::Api("set CHIXIE_PASSWORD".into()))?;
+        .map_err(|_| chixie_core::Error::Api("set CHIXIE_PASSWORD".into()))?;
     let mut c = api::Client::new()?;
     let l = c.login(&account, &password)?;
     eprintln!("logged in as {} ({})", l.username, l.role_code);
@@ -105,7 +105,7 @@ enum SdOp {
     Status,
 }
 
-fn open(port: Option<String>, ip: Option<String>, baud: u32) -> chixie_rs::Result<Box<dyn transport::Link>> {
+fn open(port: Option<String>, ip: Option<String>, baud: u32) -> chixie_core::Result<Box<dyn transport::Link>> {
     Ok(match (ip, port) {
         (Some(ip), _) => Box::new(transport::open_telnet(&ip, transport::DEFAULT_TELNET_PORT)?),
         (None, Some(p)) => Box::new(transport::open_serial(&p, baud)?),
@@ -119,7 +119,7 @@ fn open(port: Option<String>, ip: Option<String>, baud: u32) -> chixie_rs::Resul
     })
 }
 
-fn main() -> chixie_rs::Result<()> {
+fn main() -> chixie_core::Result<()> {
     env_logger::init();
     match Cli::parse().cmd {
         Cmd::Ports => {
@@ -163,7 +163,7 @@ fn main() -> chixie_rs::Result<()> {
             // Online catalog is 1-based; collected is one page (0).
             let fetch = |p: i64| if online { c.online_fonts(p, &search) } else { c.collected_fonts(p) };
             let mut printed = 0;
-            let mut emit = |batch: Vec<chixie_rs::api::FontInfo>| {
+            let mut emit = |batch: Vec<chixie_core::api::FontInfo>| {
                 for f in &batch {
                     println!("{}\t{}\t{} chars", f.id, f.font_name, f.character_number);
                 }
@@ -192,10 +192,10 @@ fn main() -> chixie_rs::Result<()> {
                 (Some(bf), Some(kf)) => {
                     let blob = std::fs::read_to_string(bf)?;
                     let key = std::fs::read_to_string(kf)?;
-                    chixie_rs::font::Font::from_encrypted(blob.trim(), key.trim())?
+                    chixie_core::font::Font::from_encrypted(blob.trim(), key.trim())?
                 }
                 _ => {
-                    let id = font_id.ok_or_else(|| chixie_rs::Error::Api("--font-id required".into()))?;
+                    let id = font_id.ok_or_else(|| chixie_core::Error::Api("--font-id required".into()))?;
                     let c = api_login()?;
                     c.font(id)?
                 }

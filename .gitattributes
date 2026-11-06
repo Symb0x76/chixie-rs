@@ -1,0 +1,2 @@
+# Byte-exact fixtures (golden G-code, font JSON) must not get CRLF on checkout.
+**/tests/fixtures/** -text
