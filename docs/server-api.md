@@ -37,6 +37,10 @@ Base host `https://chixie.com.cn/client_api/`. Envelope: `{status, msg, data, pa
   default_load_size, mixing_ratio, type_name, tags, font_preview, …}]`.
 - `font/get_font_access` req `{font_id, token}` → `data`: a **Fernet token string** holding the
   whole font (one call per font; 6–13 MB decrypted).
+- `font/get_online_fonts` (full catalog, **1-based page, 9/page**) req
+  `{filter_tags:["chinese","english","Japanese","handwritten","standard","formula_symbol","scribble"],
+  sort_rule:"collections", page_num:1, search_name:""}` → same `FontInfo` shape as collected.
+  Omitting the tags/sort/search fields or using page 0 → HTTP 400.
 - `user/heartbeat` req `{}` → `data:"ok"`. `ai/get_ai_account` req `{ai_type}` → xunfei keys.
 
 ### Font payload format (decrypted, verified)
