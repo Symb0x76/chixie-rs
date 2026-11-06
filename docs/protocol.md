@@ -15,6 +15,35 @@ or a serial capture of the old app.
 - `$$` key values: `$100-102=80` steps/mm, `$110/111=12000` `$112=10000` mm/min max rate,
   `$120/121=3000` `$122=8000` accel, `$130-132=300` travel mm, `$22=0` homing off, `$32=0` laser mode off.
 
+## Pen lift (`core.GcodeGenerator.gcode_generator_base`)
+
+`get_pen_up_gcode` / `get_pen_down_gcode` branch on `DeviceType`:
+`WritingRobot_StepperPenUp`, `WritingRobot_SteeringEnginePenUp` (servo),
+`WritingRobot_ElectroMagnetPenUp`, `LaserEngravingMachine`, `ThreeDPrinter`, `CustomZCommandDevice`.
+Only Z literal in the pool is `G1G90 Z` → writing robots all lift via absolute Z
+(Grbl_ESP32 maps Z to stepper / RC servo / solenoid in firmware). Laser/3D/custom branches
+use strings not recovered — **VERIFY** if needed.
+
+Other literals: `G92 X0 Y…` (set origin), `G90G0 X0Y0` (back to origin, `BackOrigin`),
+jog `$J=G21G91 …`, manual pen jog `G21G91 Z` / `G21G91 Z-`.
+
+User config `%USERPROFILE%\ChiXie3\conf\config.ini` `[DeviceConfig] DeviceParams`
+(QVariantMap, device "guangku"):
+
+| key | value |
+|---|---|
+| deviceType | 0 (= `WritingRobot_StepperPenUp`) |
+| firmware | 3 (enum index, **VERIFY** mapping) |
+| penUp | 0 |
+| penDown | "2" |
+| writeSpeed | "19000" (mm/min) |
+| pauseTime | "0" |
+| x_plus/x_reduce/y_plus/y_reduce | `X+` `X-` `Y+` `Y-` (axis direction mapping) |
+
+⇒ on this machine: pen up `G1G90 Z0`, pen down `G1G90 Z2`. Verified on hardware 2026-11-06
+with `F1000` (operator confirmed pen touched paper and lifted). Original literal has no `F`
+(relies on modal feed); the rewrite should always emit an explicit feed.
+
 ## Firmware families (`core.ChiXie` / `firmware_type`)
 
 | Value | Meaning |
