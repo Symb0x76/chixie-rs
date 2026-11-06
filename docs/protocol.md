@@ -139,5 +139,34 @@ G90G0 X0Y0                  (return to origin)
 - Extra spacing is solved from advance = a·(size/100) + spacing across both sizes.
 - Random values are drawn **per character when the text is laid out**, not per write. Repeated
   writes of the same document are byte-identical. Changing font size keeps the same draws.
-- **VERIFY:** the deformation semantics. That needs a capture with `EnableCharacterDeformation` on;
-  `rms` > 0 will quantify per-point distortion.
+**Character deformation (设置 → 字符变形), captured 2026-11-06:**
+
+*Method:* the text is re-pasted each time (an effect only applies at layout), each capture is
+written twice (the two are always byte-identical), and a per-glyph affine fit is made against a
+deform-off control pasted the same way. The fit is `q = R(θ)·[[sx,k],[0,sy]]·p + t`, plus the
+residual after it. Single-stroke `1` is collinear, so its sx is unreliable.
+
+- **基础变形 (base)** — defaults: 胖瘦 96–104%, 高矮 96–104%, rotation −2…+2°, 笔画变形幅度 1,
+  随机删除小尾巴 on.
+
+  | glyph | sx | sy | rot | shear | residual mm |
+  |---|---|---|---|---|---|
+  | 你 | 1.037 | 1.072 | −0.85° | +0.017 | 0.061 |
+  | 好 | 1.051 | 0.981 | −1.48° | −0.019 | 0.046 |
+  | 赤 | 1.018 | 0.959 | −0.17° | −0.003 | 0.044 |
+  | 写 | 0.941 | 1.027 | +0.05° | +0.011 | 0.022 |
+  | A | 0.979 | 0.978 | +0.77° | +0.004 | 0.043 |
+
+  - A per-glyph random x/y scale (≈ the configured %; a few values land just outside ±4%,
+    **VERIFY** whether the range is exclusive or composed with other terms) and a rotation within ±2°.
+  - Plus a stroke-level perturbation of about 0.02–0.06 mm RMS at amplitude 1. Single-stroke glyphs
+    show none, so it is most likely a per-stroke offset/warp.
+  - "Remove small tails" removed no points in this sample.
+- **字形变形 (shape)**, amplitude 7: a consistent italic-like slant on CJK glyphs (shear −0.12…−0.13;
+  rotation −2…−3.4°), scale up to +8%, and a non-affine residual of 0.035–0.106 mm. Latin `A` is
+  barely affected. The exact warp field is **VERIFY**; model it as slant + small smooth noise.
+- **Paste vs typed (unexplained, VERIFY):** text pasted with deformation **off** still gets a
+  per-glyph axis-aligned scale relative to typed text (sx 0.70–1.05, sy 0.86–1.01, no rotation, exact
+  fit). Typed text matched the raw font at scale 1.
+
+Captures: `captures/{a2_pasted_deform_off,d_base_deform,d_shape_deform7}.gcode` (local only).
