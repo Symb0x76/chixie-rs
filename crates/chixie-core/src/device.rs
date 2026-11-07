@@ -322,7 +322,12 @@ impl Actor {
                 }
             }
         }
-        self.emit(Event::JobEnded { outcome: JobOutcome::Done, page: pages.saturating_sub(1), line: 0 });
+        // Park: pen up, back to the work origin, so the next sheet can go in.
+        let last = pages.saturating_sub(1);
+        if let Err(e) = self.cmd(&self.pen_line(Pen::Up)).and_then(|()| self.cmd("G90G0 X0Y0")) {
+            return self.fail(e, Some(last), None);
+        }
+        self.emit(Event::JobEnded { outcome: JobOutcome::Done, page: last, line: 0 });
     }
 
     /// `Ok(true)` on `NextSheet`, `Ok(false)` on stop. Keeps status polling alive meanwhile.
@@ -459,7 +464,10 @@ mod tests {
         h.send(Command::NextSheet);
         let end = wait_for(&ev, |e| matches!(e, Event::JobEnded { .. }));
         assert_eq!(end, Event::JobEnded { outcome: JobOutcome::Done, page: 1, line: 0 });
-        assert_eq!(fake.lock().unwrap().lines.len(), 1 + 5 + 3);
+        let f = fake.lock().unwrap();
+        assert_eq!(f.lines.len(), 1 + 5 + 3 + 2); // + park: pen up, back to origin
+        assert_eq!(&f.lines[f.lines.len() - 2..], ["G1G90 Z0 F8000", "G90G0 X0Y0"]);
+        drop(f);
         h.send(Command::Shutdown);
     }
 
@@ -513,7 +521,7 @@ mod tests {
         wait_for(&ev, |e| matches!(e, Event::JobEnded { outcome: JobOutcome::Done, .. }));
         h.send(Command::Shutdown);
         let f = fake.lock().unwrap();
-        assert_eq!(f.lines.len(), 1 + 100);
+        assert_eq!(f.lines.len(), 1 + 100 + 2); // + park
         let rt: Vec<u8> = f.realtime.iter().copied().filter(|b| *b != realtime::STATUS).collect();
         assert_eq!(rt, vec![realtime::FEED_HOLD, realtime::CYCLE_START]);
     }
