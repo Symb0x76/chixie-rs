@@ -135,6 +135,8 @@ pub fn rng_for(seed: u64, salt: u64, id: u64) -> Rng {
 const SALT_LINE: u64 = 0x4C49_4E45_0000_0001;
 const SALT_GLYPH: u64 = 0x474C_5948_0000_0002;
 const SALT_INDENT: u64 = 0x494E_4445_0000_0003;
+/// Random row count per page (ruled templates).
+pub const SALT_ROWS: u64 = 0x524F_5753_0000_0005;
 /// Deformation draws from its own stream so toggling jitter doesn't change deformation.
 pub const SALT_DEFORM: u64 = 0x4445_464F_0000_0004;
 

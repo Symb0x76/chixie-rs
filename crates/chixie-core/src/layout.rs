@@ -10,7 +10,7 @@
 
 use crate::deformation::Deformation;
 use crate::font::Font;
-use crate::handwriting::{HandwritingStyle, Jitter, SALT_DEFORM, is_cjk, rng_for};
+use crate::handwriting::{HandwritingStyle, Jitter, SALT_DEFORM, SALT_ROWS, is_cjk, rng_for};
 
 /// One pen-down polyline in machine mm.
 pub type Stroke = Vec<(f32, f32)>;
@@ -18,6 +18,35 @@ pub type Stroke = Vec<(f32, f32)>;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Page {
     pub strokes: Vec<Stroke>,
+    /// Template ruling (row lines, cell boxes, column dividers) in machine mm. Shown in the
+    /// editor only; never written: templates describe pre-printed paper.
+    pub guides: Vec<Guide>,
+}
+
+/// One ruling segment (machine mm).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Guide {
+    pub a: (f32, f32),
+    pub b: (f32, f32),
+    pub dashed: bool,
+}
+
+/// Nominal glyph height in font units (CJK glyphs span about 0..7). Used to sit text on ruled
+/// rows and centre it in grid cells. VERIFY against a ChiXie3 template capture.
+pub const EM_UNITS: f32 = 7.0;
+
+/// How lines are placed on a page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Ruling {
+    /// Lines every `line_height` from the top (no guides).
+    #[default]
+    Free,
+    /// Ruled paper: `rows` lines per page (a random count in the range, drawn per page),
+    /// `columns` equal columns `column_gap` apart, filled top to bottom then left to right.
+    /// `band`: dual-line mode, an upper band (mm) kept free above the writing line.
+    Rows { rows: (u32, u32), columns: u32, column_gap: f32, band: Option<f32>, dashed: bool, divider: bool },
+    /// Composition grid: one character per `cell` (w, h), `gap` (col, row) between cells.
+    Grid { rows: u32, cols: u32, cell: (f32, f32), gap: (f32, f32) },
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -168,6 +197,8 @@ pub struct PageParams {
     /// Handwriting jitter. When enabled it replaces `char_spacing` and `space_width`.
     pub style: HandwritingStyle,
     pub deformation: Deformation,
+    /// Line placement; anything but `Free` needs `page`.
+    pub ruling: Ruling,
 }
 
 impl Default for PageParams {
@@ -181,6 +212,7 @@ impl Default for PageParams {
             page: None,
             style: HandwritingStyle::default(),
             deformation: Deformation::default(),
+            ruling: Ruling::Free,
         }
     }
 }
@@ -199,18 +231,142 @@ struct Pen<'p> {
     doc: Document,
     page: Page,
     page_ix: usize,
-    cx: f32,       // cursor x in mm, relative to origin
-    line_top: f32, // mm below origin for the current line
+    cx: f32,       // cursor x in mm, relative to the line's left edge
+    line_top: f32, // Free ruling: mm below origin for the current line (accumulated)
     line_start: usize,
+    /// Line slot on the current page (ruled / grid) and cell column (grid).
+    slot: usize,
+    col: u32,
+    /// Row count of the current page (ruled / grid).
+    rows: u32,
+    /// Current line geometry, mm relative to origin (x right, y down).
+    line_x: f32,
+    line_w: f32,
+    row_top: f32,
+    row_h: f32,
+    /// Where glyph tops (glyph y = 0) go on this line.
+    text_top: f32,
+    em: f32,
 }
 
 impl Pen<'_> {
+    fn page_box(&self) -> PageBox {
+        self.p.page.unwrap_or(PageBox { width: f32::INFINITY, height: f32::INFINITY })
+    }
+
+    /// Row count for page `k` (a random line count is drawn per page).
+    fn rows_for(&self, k: usize) -> u32 {
+        match self.p.ruling {
+            Ruling::Rows { rows: (lo, hi), .. } => {
+                let lo = lo.max(1);
+                if hi <= lo {
+                    lo
+                } else {
+                    let r = rng_for(self.p.style.seed, SALT_ROWS, k as u64).next_u64();
+                    lo + (r % u64::from(hi - lo + 1)) as u32
+                }
+            }
+            Ruling::Grid { rows, .. } => rows.max(1),
+            Ruling::Free => 0,
+        }
+    }
+
+    /// Set the current line's geometry from the ruling and slot.
+    fn enter_slot(&mut self) {
+        let b = self.page_box();
+        match self.p.ruling {
+            Ruling::Free => {
+                (self.line_x, self.line_w) = (0.0, b.width);
+                (self.row_top, self.row_h, self.text_top) = (self.line_top, self.p.line_height, self.line_top);
+            }
+            Ruling::Rows { columns, column_gap, band, .. } => {
+                let n = self.rows as usize;
+                let cols = columns.max(1) as f32;
+                let pitch = b.height / n as f32;
+                let col_w = (b.width - column_gap * (cols - 1.0)) / cols;
+                let (c, r) = (self.slot / n, self.slot % n);
+                self.line_x = c as f32 * (col_w + column_gap);
+                self.line_w = col_w;
+                self.row_top = r as f32 * pitch;
+                self.row_h = pitch;
+                // Sit on the rule: glyph bottom slightly above the line (VERIFY).
+                let band = band.unwrap_or(0.0).min(pitch);
+                let slack = (pitch - band - self.em).max(0.0);
+                self.text_top = self.row_top + band + slack * 0.7;
+            }
+            Ruling::Grid { cols, cell: (cw, ch), gap: (cg, rg), .. } => {
+                self.line_x = 0.0;
+                self.line_w = cols as f32 * (cw + cg);
+                self.row_top = self.slot as f32 * (ch + rg);
+                self.row_h = ch;
+                self.text_top = self.row_top + (ch - self.em) / 2.0;
+            }
+        }
+    }
+
+    /// Ruling guides for the page being started.
+    fn page_guides(&mut self) {
+        let b = self.page_box();
+        let (ox, oy) = self.p.origin;
+        let seg = |x0: f32, y0: f32, x1: f32, y1: f32, dashed: bool| Guide { a: (ox + x0, oy - y0), b: (ox + x1, oy - y1), dashed };
+        let mut g = Vec::new();
+        match self.p.ruling {
+            Ruling::Free => {}
+            Ruling::Rows { columns, column_gap, band, dashed, divider, .. } => {
+                let n = self.rows;
+                let cols = columns.max(1);
+                let pitch = b.height / n as f32;
+                let col_w = (b.width - column_gap * (cols as f32 - 1.0)) / cols as f32;
+                for c in 0..cols {
+                    let x0 = c as f32 * (col_w + column_gap);
+                    for r in 0..=n {
+                        let y = r as f32 * pitch;
+                        g.push(seg(x0, y, x0 + col_w, y, false));
+                        if let Some(band) = band
+                            && r < n
+                        {
+                            let yb = y + band.min(pitch);
+                            g.push(seg(x0, yb, x0 + col_w, yb, dashed));
+                        }
+                    }
+                    if divider && c + 1 < cols {
+                        let x = x0 + col_w + column_gap / 2.0;
+                        g.push(seg(x, 0.0, x, b.height, false));
+                    }
+                }
+            }
+            Ruling::Grid { rows, cols, cell: (cw, ch), gap: (cg, rg) } => {
+                for r in 0..rows {
+                    let y0 = r as f32 * (ch + rg);
+                    for c in 0..cols {
+                        let x0 = c as f32 * (cw + cg);
+                        let (x1, y1) = (x0 + cw, y0 + ch);
+                        g.push(seg(x0, y0, x1, y0, false));
+                        g.push(seg(x0, y1, x1, y1, false));
+                        g.push(seg(x0, y0, x0, y1, false));
+                        g.push(seg(x1, y0, x1, y1, false));
+                    }
+                }
+            }
+        }
+        self.page.guides = g;
+    }
+
+    fn new_page(&mut self) {
+        self.doc.pages.push(std::mem::take(&mut self.page));
+        self.page_ix += 1;
+        self.line_top = 0.0;
+        self.slot = 0;
+        self.rows = self.rows_for(self.page_ix);
+        self.page_guides();
+    }
+
     fn close_line(&mut self, end: usize) {
         let (_, oy) = self.p.origin;
         self.doc.lines.push(LineInfo {
             page: self.page_ix,
-            top: oy - self.line_top,
-            bottom: oy - (self.line_top + self.p.line_height),
+            top: oy - self.row_top,
+            bottom: oy - (self.row_top + self.row_h),
             start: self.line_start,
             end,
         });
@@ -220,21 +376,46 @@ impl Pen<'_> {
     fn newline(&mut self, end: usize, next: usize) {
         self.close_line(end);
         self.cx = 0.0;
-        self.line_top += self.p.line_height;
-        if let Some(b) = self.p.page
-            && self.line_top + self.p.line_height > b.height
-        {
-            self.doc.pages.push(std::mem::take(&mut self.page));
-            self.page_ix += 1;
-            self.line_top = 0.0;
+        self.col = 0;
+        match self.p.ruling {
+            Ruling::Free => {
+                self.line_top += self.p.line_height;
+                if let Some(b) = self.p.page
+                    && self.line_top + self.p.line_height > b.height
+                {
+                    self.new_page();
+                }
+            }
+            Ruling::Rows { columns, .. } => {
+                self.slot += 1;
+                if self.slot >= self.rows as usize * columns.max(1) as usize {
+                    self.new_page();
+                }
+            }
+            Ruling::Grid { .. } => {
+                self.slot += 1;
+                if self.slot >= self.rows as usize {
+                    self.new_page();
+                }
+            }
         }
+        self.enter_slot();
         self.line_start = next;
     }
 
     fn push_box(&mut self, x0: f32) {
-        let ox = self.p.origin.0;
+        let ox = self.p.origin.0 + self.line_x;
         let line = self.doc.lines.len();
         self.doc.boxes.push(CharBox { page: self.page_ix, line, x0: ox + x0, x1: ox + self.cx });
+    }
+}
+
+/// Place one glyph's strokes with its left edge at `x` (mm from origin) on the current line.
+fn draw_glyph(pen: &mut Pen, strokes: &[Vec<(f32, f32)>], x: f32, voff: f32, s: f32) {
+    let (ox, oy) = pen.p.origin;
+    let top = pen.text_top;
+    for stroke in strokes {
+        pen.page.strokes.push(stroke.iter().map(|&(gx, gy)| (ox + x + gx * s, oy - (top + voff + gy * s))).collect());
     }
 }
 
@@ -260,6 +441,22 @@ pub fn layout_ids(chars: &[char], ids: &[u64], font: &Font, p: &PageParams) -> D
         cx: 0.0,
         line_top: 0.0,
         line_start: 0,
+        slot: 0,
+        col: 0,
+        rows: 0,
+        line_x: 0.0,
+        line_w: f32::INFINITY,
+        row_top: 0.0,
+        row_h: p.line_height,
+        text_top: 0.0,
+        em: EM_UNITS * s,
+    };
+    pen.rows = pen.rows_for(0);
+    pen.enter_slot();
+    pen.page_guides();
+    let grid = match p.ruling {
+        Ruling::Grid { cols, cell, gap, .. } if p.page.is_some() => Some((cols.max(1), cell.0, gap.0)),
+        _ => None,
     };
     let mut prev: Option<char> = None;
     // Jitter: the next placed character starts a line (and maybe a paragraph).
@@ -275,6 +472,37 @@ pub fn layout_ids(chars: &[char], ids: &[u64], font: &Font, p: &PageParams) -> D
             fresh_paragraph = false;
         }
         let x0 = pen.cx;
+        if let (Some((cols, cw, cg)), false) = (grid, ch == '\n') {
+            // One character per cell, centred; spaces and missing glyphs take a cell too.
+            if pen.col >= cols {
+                pen.newline(i, i);
+            }
+            let cell_x = pen.col as f32 * (cw + cg);
+            match (ch, font.get(ch)) {
+                (' ', _) => {}
+                (_, None) => {
+                    if !pen.doc.missing.contains(&ch) {
+                        pen.doc.missing.push(ch);
+                    }
+                }
+                (_, Some(glyph)) => {
+                    let voff = if jitter_on { jit.vertical(id) } else { 0.0 };
+                    let x = cell_x + (cw - glyph.advance * s) / 2.0;
+                    if deform_on {
+                        let mut drng = rng_for(p.style.seed, SALT_DEFORM, id);
+                        let strokes = p.deformation.apply(&glyph.strokes, is_cjk(ch), s, &mut drng);
+                        draw_glyph(&mut pen, &strokes, x, voff, s);
+                    } else {
+                        draw_glyph(&mut pen, &glyph.strokes, x, voff, s);
+                    }
+                }
+            }
+            pen.cx = cell_x + cw;
+            pen.col += 1;
+            pen.push_box(cell_x);
+            prev = Some(ch);
+            continue;
+        }
         match ch {
             '\n' => {
                 pen.push_box(x0);
@@ -309,17 +537,15 @@ pub fn layout_ids(chars: &[char], ids: &[u64], font: &Font, p: &PageParams) -> D
             continue;
         };
         // Wrap before a glyph that would cross the right edge (never on an empty line).
-        if let Some(b) = p.page
-            && pen.cx > 0.0
-            && pen.cx + glyph.advance * s > b.width
-        {
+        if p.page.is_some() && pen.cx > 0.0 && pen.cx + glyph.advance * s > pen.line_w {
             pen.newline(i, i);
             if jitter_on {
                 pen.cx = jit.line_start(id);
             }
         }
         let x0 = pen.cx;
-        let (cx, line_top) = (pen.cx, pen.line_top);
+        // `line_x + cx` is exactly `cx` on Free ruling (line_x = 0), keeping the golden bytes.
+        let (cx, line_top) = (pen.line_x + pen.cx, pen.text_top);
         if !jitter_on && !deform_on {
             for stroke in &glyph.strokes {
                 pen.page.strokes.push(
@@ -530,7 +756,7 @@ mod tests {
     #[test]
     fn bounds_cover_all_pages() {
         let doc = Document {
-            pages: vec![Page { strokes: vec![vec![(1.0, -2.0), (5.0, -1.0)]] }, Page { strokes: vec![vec![(0.5, -9.0)]] }],
+            pages: vec![Page { strokes: vec![vec![(1.0, -2.0), (5.0, -1.0)]], ..Default::default() }, Page { strokes: vec![vec![(0.5, -9.0)]], ..Default::default() }],
             ..Default::default()
         };
         assert_eq!(doc.bounds(), Some((0.5, -9.0, 5.0, -1.0)));
@@ -543,7 +769,7 @@ mod tests {
         let g = Glyph { advance: 3.0, strokes: vec![vec![(0.0, 0.0), (0.0, 2.0)]] };
         let p = PageParams { origin: (10.0, 50.0), ..Default::default() };
         let doc = layout("I", &font_with('I', g), &p);
-        assert_eq!(doc.pages, vec![Page { strokes: vec![vec![(10.0, 50.0), (10.0, 48.0)]] }]);
+        assert_eq!(doc.pages, vec![Page { strokes: vec![vec![(10.0, 50.0), (10.0, 48.0)]], ..Default::default() }]);
     }
 
     #[test]

@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn emits_pen_cycle() {
-        let page = Page { strokes: vec![vec![(10.0, 50.0), (10.0, 48.0)]] };
+        let page = Page { strokes: vec![vec![(10.0, 50.0), (10.0, 48.0)]], ..Default::default() };
         let out = emit(&page, &DeviceProfile::default());
         assert_eq!(
             out,
