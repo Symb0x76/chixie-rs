@@ -19,3 +19,5 @@ sha2.workspace = true
 thiserror.workspace = true
 async-channel.workspace = true
 toml.workspace = true
+directories.workspace = true
+keyring.workspace = true

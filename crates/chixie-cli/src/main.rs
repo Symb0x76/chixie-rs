@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chixie_core::{api, calibration, discovery, esp3d, gcode, grbl, handwriting, layout, transport};
+use chixie_core::{api, calibration, config, discovery, esp3d, gcode, grbl, handwriting, layout, transport};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -118,6 +118,13 @@ enum Cmd {
     },
     /// Print a style profile (ChiXie3 defaults, jitter on, deformation off) for `write --style`
     StyleTemplate,
+    /// Convert ChiXie3's config.ini writing/deformation settings into a style profile
+    /// (only [WriteConfig] and [CharacterDeformation] are read; login data is ignored)
+    ImportStyle {
+        /// Default: %USERPROFILE%\ChiXie3\conf\config.ini
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
 }
 
 fn api_login() -> chixie_core::Result<api::Client> {
@@ -227,6 +234,16 @@ fn main() -> chixie_core::Result<()> {
                 }
             }
             eprintln!("{printed} fonts");
+        }
+        Cmd::ImportStyle { from } => {
+            let path = match from {
+                Some(p) => p,
+                None => PathBuf::from(std::env::var("USERPROFILE").map_err(|_| {
+                    chixie_core::Error::Config("USERPROFILE not set; pass --from".into())
+                })?)
+                .join(r"ChiXie3\conf\config.ini"),
+            };
+            print!("{}", config::import_chixie3(&std::fs::read_to_string(&path)?).to_toml());
         }
         Cmd::StyleTemplate => {
             let mut s = handwriting::StyleFile::default();

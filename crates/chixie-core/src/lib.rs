@@ -3,6 +3,8 @@
 
 pub mod api;
 pub mod calibration;
+pub mod config;
+pub mod credentials;
 pub mod deformation;
 pub mod device;
 pub mod discovery;
@@ -30,6 +32,10 @@ pub enum Error {
     Font(String),
     #[error("api: {0}")]
     Api(String),
+    #[error("credential store: {0}")]
+    Credential(String),
+    #[error("config: {0}")]
+    Config(String),
     #[error("timeout waiting for device")]
     Timeout,
     #[error("cancelled")]

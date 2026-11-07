@@ -91,6 +91,21 @@ GUI plan: `C:\Users\Symb0x76\.claude\plans\d-projects-rust-chixie-rs-docs-handof
 - End-to-end checks: the default CLI output == the pre-refactor golden; `--font-size 300` ==
   `--scale 3`; the precedence cases hold.
 
+## Settings, credentials, API (2026-11-07)
+- `config.rs`: `Settings` TOML at `ProjectDirs("chixie-rs").config_dir()/settings.toml`
+  (`%APPDATA%\chixie-rs\config` on Windows).
+  - Holds account, remember-me, device profile/baud/last port/IP, page (font, size, line height
+    10.25, A4, margins 21) and style.
+  - Saves atomically (temp file + rename). Missing keys fall back to defaults.
+- `import_chixie3(ini)` reads only `[WriteConfig]` and `[CharacterDeformation]`; the parser skips
+  every other section, so the plaintext `[LoginConfig]` is never read. CLI: `chixie import-style`.
+  First-line indent is not imported (not applied in ChiXie3's default mode).
+- `credentials.rs`: keyring 4.2 (Windows Credential Manager), service `chixie-rs`, key = account.
+  Its round-trip test is `#[ignore]`d (it touches the OS store). It passed once on this machine on
+  2026-11-07.
+- `api.rs`: `heartbeat()` (verified shape), `logout()` (body `{}` is a guess, VERIFY; clears the
+  local session either way), `is_logged_in()`.
+
 Modules (`crates/chixie-core/src/`; CLI is `crates/chixie-cli/src/main.rs`):
 - `transport.rs` — serial + telnet line links, CH340/GD32 port auto-detect.
 - `grbl.rs` — char-counting streamer, error/alarm/cancel, realtime cmds.

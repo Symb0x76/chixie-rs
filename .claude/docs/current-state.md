@@ -5,10 +5,10 @@
 - M0 done: workspace, golden, gpui-kit spike.
 - M1 done: calibration (mm/unit = size/100) plus jitter, deformation and multi-line layout rules,
   all captured from ChiXie3 via a fake Grbl. See docs/protocol.md and memory `chixie3-capture-method`.
-- M2 mostly done:
+- M2 done (core side):
   - layout/gcode split; Grbl pause/status; device actor;
   - calibration; handwriting jitter; deformation; style TOML; CLI flags.
-- Tests: 44 core + 2 goldens; clippy clean.
+- Tests: 49 core (+1 opt-in keyring) + 2 goldens; clippy clean.
 
 ## Open / VERIFY
 - Space width; wrap rule (glyph origin vs right edge); first-line indent mode; `row_offset_style`
@@ -18,6 +18,6 @@
 - ChiXie3's Telnet stalls on long jobs, so keep capture jobs short.
 
 ## Next
-- M2 rest: `config.rs` (TOML settings under %APPDATA%), `credentials.rs` (keyring), API
-  logout/heartbeat.
-- M3: GUI shell, login, fonts.
+- Done since: config.rs + ChiXie3 importer, credentials.rs (keyring), API heartbeat/logout.
+- Next: M3 GUI shell, login, fonts (gpui-kit 0.9.0).
+

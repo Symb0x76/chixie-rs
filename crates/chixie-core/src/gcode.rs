@@ -9,7 +9,8 @@ use std::fmt::Write;
 use crate::layout::{Document, Page};
 
 /// How the device moves the pen. Defaults match the verified Grbl_ESP32 board.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DeviceProfile {
     /// Device G-code to lift / lower the pen (e.g. "G1G90 Z0" / "G1G90 Z2").
     pub pen_up: String,
