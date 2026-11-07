@@ -49,8 +49,21 @@ enum Cmd {
     /// the GUI's saved account and the password from the Windows credential store ("remember
     /// password" in the GUI), or CHIXIE_ACCOUNT / CHIXIE_PASSWORD.
     FontCheck {
+        /// One font id; omit with --all
         #[arg(long)]
-        font_id: i64,
+        font_id: Option<i64>,
+        /// Check every collected font
+        #[arg(long)]
+        all: bool,
+        /// Send a heartbeat before fetching (as the GUI does every 60 s)
+        #[arg(long)]
+        heartbeat: bool,
+        /// Log in a second time (another client) before fetching with the first
+        #[arg(long)]
+        relogin: bool,
+        /// Wait this many seconds after login before fetching
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
     },
     /// List fonts (login via CHIXIE_ACCOUNT / CHIXIE_PASSWORD env)
     Fonts {
@@ -213,7 +226,7 @@ fn main() -> chixie_core::Result<()> {
             };
             println!("{out}");
         }
-        Cmd::FontCheck { font_id } => {
+        Cmd::FontCheck { font_id, all, heartbeat, relogin, wait } => {
             let settings = chixie_core::config::Settings::default_path()
                 .and_then(|p| chixie_core::config::Settings::load(&p))
                 .unwrap_or_default();
@@ -229,9 +242,29 @@ fn main() -> chixie_core::Result<()> {
             let mut c = api::Client::new()?;
             let l = c.login(&account, &password)?;
             eprintln!("logged in as {} ({})", l.username, l.role_code);
-            match c.font(font_id) {
-                Ok(f) => println!("font {font_id}: OK, {} glyphs", f.glyphs.len()),
-                Err(e) => println!("font {font_id}: {e}"),
+            if wait > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(wait));
+            }
+            if heartbeat {
+                c.heartbeat()?;
+                eprintln!("heartbeat ok");
+            }
+            if relogin {
+                let mut other = api::Client::new()?;
+                other.login(&account, &password)?;
+                eprintln!("second login ok");
+            }
+            let ids: Vec<(i64, String)> = if all {
+                c.collected_fonts(0)?.into_iter().map(|f| (f.id, f.font_name)).collect()
+            } else {
+                let id = font_id.ok_or_else(|| chixie_core::Error::Api("give --font-id N or --all".into()))?;
+                vec![(id, String::new())]
+            };
+            for (id, name) in ids {
+                match c.font(id) {
+                    Ok(f) => println!("font {id} {name}: OK, {} glyphs", f.glyphs.len()),
+                    Err(e) => println!("font {id} {name}: {e}"),
+                }
             }
         }
         Cmd::Fonts { online, page, search } => {

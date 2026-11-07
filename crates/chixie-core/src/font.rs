@@ -33,6 +33,23 @@ fn b64_url(s: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// Byte candidates for a font blob. The server appends junk after the token: after the `=`
+/// padding when there is one, and directly after the last data character when the token needs no
+/// padding (then the length is not a multiple of 4). Without `=` the cut point is ambiguous, so
+/// every cut that leaves a multiple of 4 characters (up to 16 junk chars) is offered; the HMAC
+/// check picks the right one.
+fn token_candidates(s: &str) -> Vec<Vec<u8>> {
+    let t = s.trim();
+    if t.contains('=') {
+        return b64_url(t).into_iter().collect();
+    }
+    let n = t.len();
+    (0..=16)
+        .filter(|k| *k < n && (n - k).is_multiple_of(4))
+        .filter_map(|k| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&t[..n - k]).ok())
+        .collect()
+}
+
 /// Decrypt a Fernet token manually: version → HMAC-SHA256 verify → AES-128-CBC/PKCS7.
 /// Timestamp is intentionally ignored (the server clock may run ahead of this machine).
 /// Stage-specific errors make failures diagnosable.
@@ -41,7 +58,22 @@ pub fn fernet_decrypt(token: &str, key: &str) -> Result<Vec<u8>> {
     if kb.len() != 32 {
         return Err(Error::Font(format!("key: {} bytes, need 32", kb.len())));
     }
-    let tb = b64_url(token).ok_or_else(|| Error::Font("token: bad base64".into()))?;
+    let candidates = token_candidates(token);
+    if candidates.is_empty() {
+        return Err(Error::Font("token: bad base64".into()));
+    }
+    let mut last = Error::Font("token: bad base64".into());
+    for tb in candidates {
+        match fernet_open(&tb, &kb) {
+            Ok(pt) => return Ok(pt),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// Verify and decrypt one decoded Fernet token with a decoded 32-byte key.
+fn fernet_open(tb: &[u8], kb: &[u8]) -> Result<Vec<u8>> {
     if tb.len() < 1 + 8 + 16 + 32 {
         return Err(Error::Font(format!("token: too short ({} bytes)", tb.len())));
     }
@@ -58,7 +90,7 @@ pub fn fernet_decrypt(token: &str, key: &str) -> Result<Vec<u8>> {
 
     let iv: [u8; 16] = tb[9..25].try_into().unwrap();
     let mut buf = tb[25..hmac_at].to_vec();
-    if buf.is_empty() || buf.len() % 16 != 0 {
+    if buf.is_empty() || !buf.len().is_multiple_of(16) {
         return Err(Error::Font(format!("ciphertext not block-aligned ({})", buf.len())));
     }
     type Dec = cbc::Decryptor<aes::Aes128>;
@@ -252,6 +284,23 @@ mod tests {
         let token = "gAAAAABq7Z1-Iyw8Zr0Cwd-oMu7e7s3t8acrzEafFSdLadD4XwXcKbiObWfMwzLOOSMMu8XxprTcoJzi8XcOIv_Wq_E3otmU2g==";
         let plain = fernet_decrypt(token, key).expect("decrypt python token");
         assert_eq!(String::from_utf8(plain).unwrap(), "héllo-stroke");
+    }
+
+    /// The server appends 2 junk chars to every font blob. With `=` padding the cut is after the
+    /// `=`; fonts whose token needs no padding (花花体 #4, 巴拉体 #18, … failed before) get the junk
+    /// right after the data. Token below: pyca Fernet, 32-byte plaintext → no padding.
+    #[test]
+    fn decrypts_unpadded_token_with_appended_junk() {
+        let key = "eYATO4_NrVMGe-hK54eMCMBPlyqXwQEOBAoQNQE7rY0=";
+        let token = "gAAAAABq7sq2qVgnB8zIOC-lX43xOf4dcNM-H4_9INUTAwlNeJFy40qw-pNtcWppcGEsahHWVxK62OuTk7KFU7-8XmXXXYsRmOhLblJuPfkSxWH3n2Ern75nA3nktI-KiwtyFs8oep9b";
+        assert_eq!(token.len() % 4, 0);
+        for junk in ["", "Qx", "x9"] {
+            let plain = fernet_decrypt(&format!("{token}{junk}"), key).unwrap_or_else(|e| panic!("junk {junk:?}: {e}"));
+            assert_eq!(plain, vec![b'x'; 32]);
+        }
+        // The padded python token with junk after its `=` run still works.
+        let padded = "gAAAAABq7Z1-Iyw8Zr0Cwd-oMu7e7s3t8acrzEafFSdLadD4XwXcKbiObWfMwzLOOSMMu8XxprTcoJzi8XcOIv_Wq_E3otmU2g==ab";
+        assert_eq!(String::from_utf8(fernet_decrypt(padded, key).unwrap()).unwrap(), "héllo-stroke");
     }
 
     #[test]
