@@ -17,7 +17,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::gcode::DeviceProfile;
-use crate::grbl::{self, Control, GrblStatus, StreamEvent, realtime};
+use crate::grbl::{self, Control, GrblStatus, MachineSettings, StreamEvent, realtime};
 use crate::transport::{self, Link};
 use crate::{Error, Result};
 
@@ -59,6 +59,8 @@ pub enum Command {
     /// `G92 X0 Y0`: make the current pen position the work origin.
     Zero,
     SetProfile(DeviceProfile),
+    /// Read the machine's `$$` settings; answered with `Event::Machine`.
+    QueryMachine,
     Run(Job),
     /// Next sheet is in place; continue after `AwaitingSheet`.
     NextSheet,
@@ -93,6 +95,8 @@ pub enum Event {
     AwaitingSheet { next: usize },
     JobEnded { outcome: JobOutcome, page: usize, line: usize },
     Error(String),
+    /// `$$` settings (reply to `Command::QueryMachine`).
+    Machine(MachineSettings),
 }
 
 pub type BoxLink = Box<dyn Link + Send>;
@@ -265,6 +269,11 @@ impl Actor {
                     Command::Jog { dx, dy, feed } => self.cmd(&format!("$J=G21G91X{dx:.3}Y{dy:.3}F{feed:.0}"))?,
                     Command::Pen(p) => self.cmd(&self.pen_line(p))?,
                     Command::Unlock => self.cmd("$X")?,
+                    Command::QueryMachine => {
+                        self.emit(Event::Log { dir: Dir::Tx, line: "$$".into() });
+                        let lines = grbl::command(self.link_mut().as_mut(), "$$", COMMAND_TIMEOUT)?;
+                        self.emit(Event::Machine(MachineSettings::parse(lines.iter().map(String::as_str))));
+                    }
                     Command::BackOrigin => {
                         self.cmd(&self.pen_line(Pen::Up))?;
                         self.cmd("G90G0 X0Y0")?;
@@ -279,7 +288,7 @@ impl Actor {
     }
 
     fn pen_line(&self, p: Pen) -> String {
-        let code = if p == Pen::Up { &self.profile.pen_up } else { &self.profile.pen_down };
+        let code = if p == Pen::Up { self.profile.pen_up_cmd() } else { self.profile.pen_down_cmd() };
         format!("{code} F{:.0}", self.profile.travel_speed)
     }
 
@@ -451,6 +460,23 @@ mod tests {
         wait_for(&ev, |e| matches!(e, Event::Log { dir: Dir::Tx, line } if line.starts_with("G1G90 Z2")));
         let lines = fake.lock().unwrap().lines.clone();
         assert_eq!(lines, vec!["$I", "$J=G21G91X1.500Y-2.000F1000", "G1G90 Z2 F8000"]);
+        h.send(Command::Shutdown);
+    }
+
+    #[test]
+    fn query_machine_parses_dollar_dollar() {
+        // Grbl answers `$$` with one line per setting, then `ok`.
+        let dollars = ["$110=12000.000", "$111=11000.000", "$130=300.000", "$131=280.000"].map(String::from).to_vec();
+        let (h, ev, _fake) = start(Fake { respond: vec![("$$".into(), dollars)], ..Default::default() });
+        wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
+        h.send(Command::QueryMachine);
+        match wait_for(&ev, |e| matches!(e, Event::Machine(_))) {
+            Event::Machine(m) => {
+                assert_eq!(m.max_feed(), Some(11000.0));
+                assert_eq!(m.travel, Some((300.0, 280.0)));
+            }
+            _ => unreachable!(),
+        }
         h.send(Command::Shutdown);
     }
 

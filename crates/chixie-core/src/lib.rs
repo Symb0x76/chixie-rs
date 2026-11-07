@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod calibration;
+pub mod chixie3_devices;
 pub mod chixie3_templates;
 pub mod config;
 pub mod credentials;

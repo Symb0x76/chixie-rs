@@ -74,6 +74,42 @@ impl Control {
     }
 }
 
+/// The machine's own specs from `$$` (Grbl settings), per axis (x, y).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MachineSettings {
+    /// `$100/$101` steps per mm.
+    pub steps_per_mm: Option<(f32, f32)>,
+    /// `$110/$111` max rate, mm/min.
+    pub max_rate: Option<(f32, f32)>,
+    /// `$120/$121` acceleration, mm/s².
+    pub accel: Option<(f32, f32)>,
+    /// `$130/$131` max travel, mm.
+    pub travel: Option<(f32, f32)>,
+    /// Every `$n=value` line, in order.
+    pub raw: Vec<(u16, String)>,
+}
+
+impl MachineSettings {
+    /// Parse `$n=value` lines (other lines are ignored).
+    pub fn parse<'a>(lines: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut raw = Vec::new();
+        for l in lines {
+            let Some((k, v)) = l.trim().strip_prefix('$').and_then(|r| r.split_once('=')) else { continue };
+            if let Ok(n) = k.trim().parse::<u16>() {
+                raw.push((n, v.trim().to_string()));
+            }
+        }
+        let get = |n: u16| raw.iter().find(|(k, _)| *k == n).and_then(|(_, v)| v.parse::<f32>().ok());
+        let pair = |a: u16, b: u16| Some((get(a)?, get(b)?));
+        Self { steps_per_mm: pair(100, 101), max_rate: pair(110, 111), accel: pair(120, 121), travel: pair(130, 131), raw }
+    }
+
+    /// The slower axis' max rate (mm/min), if known.
+    pub fn max_feed(&self) -> Option<f32> {
+        self.max_rate.map(|(x, y)| x.min(y))
+    }
+}
+
 /// Parsed `<State|MPos:x,y,z|WPos:..|FS:feed,speed|…>` status report.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GrblStatus {
@@ -259,6 +295,8 @@ pub(crate) mod fake {
         /// `?` replies: served after queued `replies` and pending `ok`s, like a real Grbl that
         /// answers status between acks but never starves them.
         pub status_q: VecDeque<String>,
+        /// Replies queued when a given line is received (before its `ok`), like `$$`.
+        pub respond: Vec<(String, Vec<String>)>,
     }
 
     impl Default for Fake {
@@ -274,6 +312,7 @@ pub(crate) mod fake {
                 status: "<Idle|MPos:0.000,0.000,0.000|FS:0,0>".into(),
                 drop_after: None,
                 status_q: VecDeque::new(),
+                respond: Vec::new(),
             }
         }
     }
@@ -287,7 +326,11 @@ pub(crate) mod fake {
                 }
                 return Ok(());
             }
-            self.lines.push(String::from_utf8_lossy(d).trim_end().to_string());
+            let line = String::from_utf8_lossy(d).trim_end().to_string();
+            if let Some((_, r)) = self.respond.iter().find(|(k, _)| *k == line) {
+                self.replies.extend(r.iter().cloned());
+            }
+            self.lines.push(line);
             self.pending.push_back(d.len());
             self.peak = self.peak.max(self.pending.iter().sum());
             Ok(())
@@ -311,6 +354,19 @@ pub(crate) mod fake {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn parses_machine_settings() {
+        let lines = ["$100=80.000", "$101=80.000", "$110=12000.000", "$111=12000.000", "$120=3000", "$121=3000", "$130=300.000", "$131=300.000", "$22=0", "[MSG:x]"];
+        let m = MachineSettings::parse(lines);
+        assert_eq!(m.steps_per_mm, Some((80.0, 80.0)));
+        assert_eq!(m.max_feed(), Some(12000.0));
+        assert_eq!(m.travel, Some((300.0, 300.0)));
+        assert_eq!(m.accel, Some((3000.0, 3000.0)));
+        assert_eq!(m.raw.len(), 9);
+        assert_eq!(MachineSettings::parse(["ok"]), MachineSettings::default());
+    }
+
     use super::fake::Fake;
     use super::*;
 
