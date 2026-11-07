@@ -5,16 +5,21 @@
 //!   dir so the real settings file and credential store are untouched.
 //! - `CHIXIE_GUI_AUTOTEST=1` (implies FAKE): log in, load a font, type and edit on the page through
 //!   the IME input handler and editor actions, export, print one `AUTOTEST ...` line and quit.
+//!   Then connect to the simulated Grbl, run the 2-page job (sheet change included) and report.
 //!   Used to verify the UI without input injection.
+//! - FAKE mode connects 设备 to an in-process simulated Grbl (`sim.rs`);
+//!   `CHIXIE_GUI_SIM_DELAY_MS` sets the per-line execution delay (default 3).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod device;
 mod doc_view;
 mod fake;
 mod file_ops;
 mod fonts;
 mod login;
+mod sim;
 mod state;
 
 use std::path::PathBuf;
@@ -23,7 +28,7 @@ use std::time::Duration;
 use chixie_core::config::Settings;
 use chixie_core::editor::EditDoc;
 use chixie_core::session::{self, HEARTBEAT_EVERY};
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode, WindowExt as _};
 use gpui_kit::*;
 
 use crate::app::ChiXieApp;
@@ -55,6 +60,10 @@ fn main() {
         session::spawn(client, HEARTBEAT_EVERY)
     };
 
+    let delay = std::env::var("CHIXIE_GUI_SIM_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(if autotest { 0 } else { 3 });
+    let opener = if fake { sim::opener(Duration::from_millis(delay)) } else { chixie_core::device::default_opener() };
+    let (device, device_events, _device_join) = chixie_core::device::spawn(opener);
+
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
         doc_view::bind_keys(cx);
@@ -68,7 +77,7 @@ fn main() {
             titlebar: Some(TitlebarOptions { title: Some("赤写 ChiXie".into()), ..Default::default() }),
             ..Default::default()
         };
-        let (handle, app) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| ChiXieApp::new(events, window, cx)))
+        let (handle, app) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| ChiXieApp::new(events, device, device_events, window, cx)))
             .expect("open window");
         cx.activate(true);
 
@@ -148,6 +157,48 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
                 doc.missing,
                 doc.bounds(),
                 files,
+            );
+        });
+        // Device: connect to the simulator, write both pages with a sheet change in between.
+        let device = cx.update(|cx| app.read(cx).device.clone());
+        cx.update(|cx| {
+            app.update(cx, |a, cx| {
+                (a.tab, a.show_pane) = (4, true);
+                cx.notify();
+            });
+            device.update(cx, |d, cx| d.connect(cx));
+        });
+        cx.background_executor().timer(pause(500)).await;
+        let connected = cx.update(|cx| device.read(cx).connected.clone());
+        cx.update(|cx| {
+            let profile = cx.global::<AppState>().settings.device.profile.clone();
+            let pages = app.read(cx).doc.read(cx).document().pages.iter().map(|p| chixie_core::gcode::emit(p, &profile)).collect();
+            device.update(cx, |d, cx| d.run(chixie_core::device::Job { pages }, cx));
+        });
+        let mut sheet_prompts = 0;
+        for _ in 0..300 {
+            cx.background_executor().timer(pause(100)).await;
+            let job = cx.update(|cx| device.read(cx).job);
+            match job {
+                None => break,
+                Some(j) if j.awaiting.is_some() => {
+                    sheet_prompts += 1;
+                    let _ = cx.update_window(handle, |_, window, cx| {
+                        window.close_dialog(cx);
+                        device.update(cx, |d, cx| d.next_sheet(cx));
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        cx.background_executor().timer(pause(400)).await;
+        cx.update(|cx| {
+            let d = device.read(cx);
+            println!(
+                "AUTOTEST_DEVICE connected={connected:?} sheet_prompts={sheet_prompts} outcome={:?} job_running={} status={:?}",
+                d.last_end,
+                d.job.is_some(),
+                d.summary()
             );
         });
         cx.background_executor().timer(pause(3000)).await; // leave time for a screenshot

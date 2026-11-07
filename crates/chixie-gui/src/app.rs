@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use chixie_core::config::import_chixie3;
 use chixie_core::editor::EditDoc;
+use chixie_core::device::{DeviceHandle, Event as DevEvent, Job};
+use chixie_core::gcode;
 use chixie_core::session::{Command, Event};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -16,6 +18,7 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, Theme, ThemeMode, WindowExt as _, h_flex, v_flex};
 use gpui_kit::*;
 
+use crate::device::{DevicePanel, Notice};
 use crate::doc_view::{self, DocView};
 use crate::file_ops;
 use crate::fonts::FontsView;
@@ -30,12 +33,17 @@ const MARGINS: [(&str, Margins); 3] =
     [("普通", (21.0, 20.0, 21.0, 20.0)), ("窄", (12.7, 12.7, 12.7, 12.7)), ("宽", (31.8, 25.4, 31.8, 25.4))];
 const TABS: [&str; 6] = ["文件", "开始", "页面布局", "手写效果", "设备", "视图"];
 const DRAFT_EVERY: Duration = Duration::from_secs(2);
+/// Plotter travel on the verified board ($130/$131 = 300 mm).
+const TRAVEL_MM: f32 = 300.0;
 
 pub struct ChiXieApp {
-    tab: usize,
+    pub tab: usize,
     pub login: Entity<LoginView>,
     pub fonts: Entity<FontsView>,
     pub doc: Entity<DocView>,
+    pub device: Entity<DevicePanel>,
+    /// Right-hand device task pane (opens on connect / job start).
+    pub show_pane: bool,
     font_size: Entity<InputState>,
     line_height: Entity<InputState>,
     /// Where 保存 writes; `None` until 另存为 / 打开 of a `.chx`.
@@ -45,7 +53,13 @@ pub struct ChiXieApp {
 }
 
 impl ChiXieApp {
-    pub fn new(events: async_channel::Receiver<Event>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        events: async_channel::Receiver<Event>,
+        device: DeviceHandle,
+        device_events: async_channel::Receiver<DevEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let login = cx.new(|cx| LoginView::new(window, cx));
         let fonts = cx.new(|cx| FontsView::new(window, cx));
         let draft = file_ops::draft_path(&cx.global::<AppState>().settings_path);
@@ -83,7 +97,27 @@ impl ChiXieApp {
                 }
             }),
         ];
-        Self { tab: 1, login, fonts, doc, font_size, line_height, file: None, _tasks: vec![pump, autosave], _subs: subs }
+        let device = cx.new(|cx| DevicePanel::new(device, window, cx));
+        let dev_pump = cx.spawn_in(window, async move |this, cx| {
+            while let Ok(ev) = device_events.recv().await {
+                if this.update_in(cx, |app, window, cx| app.on_device_event(ev, window, cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            tab: 1,
+            login,
+            fonts,
+            doc,
+            device,
+            show_pane: false,
+            font_size,
+            line_height,
+            file: None,
+            _tasks: vec![pump, dev_pump, autosave],
+            _subs: subs,
+        }
     }
 
     fn on_session_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
@@ -285,7 +319,7 @@ impl ChiXieApp {
             1 => self.tab_home(&g, cx),
             2 => self.tab_layout(&g, cx),
             3 => self.tab_style(&g, cx),
-            4 => self.tab_device(&g),
+            4 => self.tab_device(&g, cx),
             _ => self.tab_view(&g, cx),
         };
         div().h(px(84.)).py_1().child(body).into_any_element()
@@ -477,17 +511,133 @@ impl ChiXieApp {
     }
 
     #[inline(never)]
-    fn tab_device(&self, g: &Group) -> AnyElement {
+    fn tab_device(&self, g: &Group, cx: &mut Context<Self>) -> AnyElement {
+        let dev = self.device.read(cx);
+        let (connected, connecting_label) = (dev.is_connected(), dev.summary());
+        let job = dev.job;
+        let running = job.is_some();
+        let paused = job.is_some_and(|j| j.paused);
+        let awaiting = job.and_then(|j| j.awaiting);
         h_flex()
             .h_full()
             .child(g.group(
-                "设备",
+                "连接",
                 h_flex()
-                    .child(big("connect", "连接", IconName::Globe).disabled(true))
-                    .child(big("send", "开始书写", IconName::ArrowRight).disabled(true))
-                    .child(div().text_sm().text_color(g.muted).child("设备控制将在下一阶段（M5）加入")),
+                    .child(if connected {
+                        big("disconnect", "断开", IconName::CircleX)
+                            .disabled(running)
+                            .on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.device.update(cx, |d, cx| d.disconnect(cx))))
+                    } else {
+                        big("connect", "连接设备", IconName::Globe).on_click(cx.listener(|t, _: &ClickEvent, _w, cx| {
+                            t.show_pane = true;
+                            t.device.update(cx, |d, cx| d.connect(cx));
+                        }))
+                    })
+                    .child(div().text_xs().text_color(g.muted).child(connecting_label)),
+            ))
+            .child(g.group(
+                "书写",
+                h_flex()
+                    .child(
+                        big("start", "开始书写", IconName::ArrowRight)
+                            .disabled(!connected || running)
+                            .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.start_job(w, cx))),
+                    )
+                    .when(awaiting.is_some(), |el| {
+                        el.child(Button::new("next").small().primary().label("已换纸，继续").on_click(cx.listener(|t, _: &ClickEvent, _w, cx| {
+                            t.device.update(cx, |d, cx| d.next_sheet(cx))
+                        })))
+                    })
+                    .child(
+                        Button::new("pause")
+                            .small()
+                            .ghost()
+                            .label(if paused { "继续" } else { "暂停" })
+                            .disabled(!running || awaiting.is_some())
+                            .on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.device.update(cx, |d, cx| d.toggle_pause(cx)))),
+                    )
+                    .child(
+                        Button::new("stop")
+                            .small()
+                            .danger()
+                            .label("停止")
+                            .disabled(!running)
+                            .on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.device.update(cx, |d, cx| d.stop(cx)))),
+                    ),
+            ))
+            .child(g.group(
+                "窗格",
+                h_flex().child(
+                    Button::new("pane")
+                        .small()
+                        .ghost()
+                        .label(if self.show_pane { "隐藏设备面板" } else { "显示设备面板" })
+                        .on_click(cx.listener(|t, _: &ClickEvent, _w, cx| {
+                            t.show_pane = !t.show_pane;
+                            cx.notify();
+                        })),
+                ),
             ))
             .into_any_element()
+    }
+
+    /// Confirm extents, then stream every page (sheet change prompts in between).
+    fn start_job(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let doc = self.doc.read(cx).document();
+        if doc.stroke_count() == 0 {
+            window.push_notification(Notification::warning("没有可书写的笔画（请先选择字体并输入文字）"), cx);
+            return;
+        }
+        let profile = cx.global::<AppState>().settings.device.profile.clone();
+        let pages: Vec<String> = doc.pages.iter().map(|p| gcode::emit(p, &profile)).collect();
+        let (w, h) = doc.bounds().map(|(x0, y0, x1, y1)| (x1 - x0, y1 - y0)).unwrap_or_default();
+        let over = w > TRAVEL_MM || h > TRAVEL_MM;
+        let desc = format!(
+            "共 {} 页（{} 笔），书写范围 {w:.1} × {h:.1} mm。{}请确认纸张已放好、笔已装好，起点为当前原点。",
+            pages.len(),
+            doc.stroke_count(),
+            if over { "⚠ 超出 300 mm 行程！" } else { "" }
+        );
+        self.show_pane = true;
+        let device = self.device.clone();
+        window.open_alert_dialog(cx, move |a, _w, _cx| {
+            let device = device.clone();
+            let pages = pages.clone();
+            a.title("开始书写？").description(desc.clone()).confirm().ok_text("开始").on_ok(move |_, _w, cx| {
+                device.update(cx, |d, cx| d.run(Job { pages: pages.clone() }, cx));
+                true
+            })
+        });
+    }
+
+    fn on_device_event(&mut self, ev: DevEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let notice = self.device.update(cx, |d, cx| d.on_event(ev, cx));
+        match notice {
+            Notice::None => {}
+            Notice::Info(m) => window.push_notification(Notification::info(m), cx),
+            Notice::Warn(m) => window.push_notification(Notification::warning(m), cx),
+            Notice::Error(m) => window.push_notification(Notification::error(m), cx),
+            Notice::AwaitingSheet(next) => {
+                let device = self.device.clone();
+                window.open_alert_dialog(cx, move |a, _w, _cx| {
+                    let (ok, cancel) = (device.clone(), device.clone());
+                    a.title("请换纸")
+                        .description(format!("第 {} 页已就绪。放好新纸、确认原点后点「继续」。", next + 1))
+                        .confirm()
+                        .ok_text("继续")
+                        .cancel_text("停止任务")
+                        .on_ok(move |_, _w, cx| {
+                            ok.update(cx, |d, cx| d.next_sheet(cx));
+                            true
+                        })
+                        .on_cancel(move |_, _w, cx| {
+                            cancel.update(cx, |d, cx| d.stop(cx));
+                            true
+                        })
+                });
+            }
+        }
+        cx.notify();
     }
 
     #[inline(never)]
@@ -537,6 +687,8 @@ impl ChiXieApp {
         let words = d.doc().chars().iter().filter(|c| !c.is_whitespace()).count();
         let missing = layout.missing.len();
         let zoom_pct = (d.zoom() / doc_view::ZOOM_100 * 100.0).round();
+        let dev = self.device.read(cx);
+        let (dev_summary, job) = (dev.summary(), dev.job);
         let theme = cx.theme();
         h_flex()
             .w_full()
@@ -555,7 +707,14 @@ impl ChiXieApp {
                 el.child(format!("缺字 {missing}：{chars}"))
             })
             .child(format!("字体：{font}"))
-            .child("设备：未连接")
+            .child(dev_summary)
+            .when_some(job, |el, j| {
+                let s = match j.awaiting {
+                    Some(n) => format!("等待换纸（第 {} 页）", n + 1),
+                    None => format!("书写 第 {}/{} 页 {:.0}%{}", j.page + 1, j.pages, j.percent(), if j.paused { "（暂停）" } else { "" }),
+                };
+                el.child(s)
+            })
             .child(div().flex_1())
             .child(Button::new("sb-zout").xsmall().ghost().icon(IconName::Minus).on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.zoom_by(1.0 / 1.1, cx))))
             .child(format!("{zoom_pct}%"))
@@ -587,7 +746,13 @@ impl Render for ChiXieApp {
             .text_color(fg)
             .child(div().px_2().child(tabs))
             .child(div().w_full().border_b_1().border_color(border).child(self.ribbon_body(cx)))
-            .child(div().flex_1().min_h_0().child(self.doc.clone()))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div().flex_1().h_full().min_w_0().child(self.doc.clone()))
+                    .when(self.show_pane, |el| el.child(self.device.clone())),
+            )
             .child(self.status_bar(cx))
             .into_any_element()
     }

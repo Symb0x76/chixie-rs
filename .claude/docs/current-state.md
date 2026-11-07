@@ -34,5 +34,13 @@
   separate `#[inline(never)]` fns (one big fn overflowed the 1 MB main stack).
 - Manual by BOSS: Microsoft Pinyin on the page, mouse selection feel, clipboard with other apps,
   real-account login.
-- Next: M5 device view (connect, jog, pen, stream with pause/resume/stop), then M6 polish.
+- M5 done (UI side): 设备 ribbon tab (连接/断开, 开始书写, 暂停/继续, 停止, 已换纸继续, 面板开关),
+  right task pane `device.rs` (port choice 自动/COMx ★, jog pad 0.1/1/10 mm, 抬笔/落笔, 设为原点,
+  回原点, 解锁, live state + position, console, job progress), start confirm with extents
+  (300 mm travel warning), 换纸 dialog, disconnect toast with page/line.
+  FAKE mode uses `sim.rs` (simulated Grbl; `CHIXIE_GUI_SIM_DELAY_MS`); AUTOTEST runs the
+  2-page job incl. sheet change → Done.
+- VERIFY on hardware (BOSS): connect COM4 via 自动, jog/pen, full job, pause (head stops),
+  stop (pen lifts), USB unplug mid-job → toast + reconnect via 自动.
+- Next: M6 (settings persistence polish, i18n, window geometry, icon, release build).
 

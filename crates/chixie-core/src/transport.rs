@@ -70,7 +70,7 @@ pub fn open_telnet(ip: &str, port: u16) -> Result<TelnetLink> {
     Ok(LineLink::new(s))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PortInfo {
     pub name: String,
     pub description: String,
