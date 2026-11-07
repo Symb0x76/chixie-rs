@@ -134,6 +134,18 @@ impl Font {
         Err(Error::Font(format!("fernet decrypt failed ({tried} key candidates tried)")))
     }
 
+    /// The glyph map in the same JSON shape `from_json` reads (`{"字": [advance, [xs…], [ys…]]}`,
+    /// one inner array per stroke), for the local font store.
+    pub fn to_json(&self) -> Vec<u8> {
+        let mut map = serde_json::Map::with_capacity(self.glyphs.len());
+        for (c, g) in &self.glyphs {
+            let xs: Vec<Vec<f32>> = g.strokes.iter().map(|s| s.iter().map(|p| p.0).collect()).collect();
+            let ys: Vec<Vec<f32>> = g.strokes.iter().map(|s| s.iter().map(|p| p.1).collect()).collect();
+            map.insert(c.to_string(), serde_json::json!([g.advance, xs, ys]));
+        }
+        serde_json::to_vec(&map).expect("glyph map serialises")
+    }
+
     /// Parse the decrypted UTF-8 JSON glyph map.
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
         // Each value is [advance, stroke, stroke, ...]; a stroke is [xs, ys].

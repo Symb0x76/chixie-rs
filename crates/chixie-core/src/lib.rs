@@ -13,6 +13,7 @@ pub mod discovery;
 pub mod editor;
 pub mod esp3d;
 pub mod font;
+pub mod font_store;
 pub mod gcode;
 pub mod grbl;
 pub mod handwriting;
