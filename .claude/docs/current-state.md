@@ -8,7 +8,7 @@
 - M2 done (core side):
   - layout/gcode split; Grbl pause/status; device actor;
   - calibration; handwriting jitter; deformation; style TOML; CLI flags.
-- Tests: 49 core (+1 opt-in keyring) + 2 goldens; clippy clean.
+- Tests: 52 core (+1 opt-in keyring) + 2 goldens; GUI autotest passes; clippy clean.
 
 ## Open / VERIFY
 - Space width; wrap rule (glyph origin vs right edge); first-line indent mode; `row_offset_style`
@@ -19,5 +19,6 @@
 
 ## Next
 - Done since: config.rs + ChiXie3 importer, credentials.rs (keyring), API heartbeat/logout.
-- Next: M3 GUI shell, login, fonts (gpui-kit 0.9.0).
+- M3 done: GUI shell, login (keyring remember-me), fonts browser; offline FAKE/AUTOTEST modes.
+- Next: M4 write view (textarea, params panel, preview canvas, export), then M5 device view.
 

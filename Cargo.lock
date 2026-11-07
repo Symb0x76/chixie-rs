@@ -935,7 +935,9 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "chixie-core",
+ "env_logger",
  "gpui-kit",
+ "log",
 ]
 
 [[package]]

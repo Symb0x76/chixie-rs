@@ -106,6 +106,26 @@ GUI plan: `C:\Users\Symb0x76\.claude\plans\d-projects-rust-chixie-rs-docs-handof
 - `api.rs`: `heartbeat()` (verified shape), `logout()` (body `{}` is a guess, VERIFY; clears the
   local session either way), `is_logged_in()`.
 
+## GUI M3: shell, login, fonts (2026-11-07)
+- Core `session.rs`: account worker thread (same pattern as `device.rs`) behind a `Backend` trait
+  (`api::Client` in production, fakes in tests).
+  - Handles login/logout, a heartbeat every 60 s (`SessionLost` on failure; interval is VERIFY),
+    collected/online font lists (online page clamped to ≥ 1), and font load.
+  - Decrypted fonts are cached in memory per session as `Arc<Font>` and dropped on logout.
+- GUI (`crates/chixie-gui/src`): replaces the M0 spike (its results stay in this file).
+  - `state.rs`: `AppState` gpui global (settings, session, user, active font). Views use
+    `observe_global` and mutate via `global_mut`.
+  - `app.rs`: login gate, then `Sidebar` (书写/字体/设备/设置) + content + status bar. It pumps
+    session events and shows `Notification` toasts. Settings page: theme toggle, logout.
+  - `login.rs`: account/password (`mask_toggle`), remember-me → `credentials` (Credential Manager);
+    the account and the flag go to settings.
+  - `fonts.rs`: `TabBar` collected/online, search (Enter or button), paging (9/page), "使用" → load.
+    The active font id is persisted and reloaded after the next login.
+- Run modes: `CHIXIE_GUI_FAKE=1` gives an offline demo (any account, password `demo`, temp
+  settings, no keyring writes). `CHIXIE_GUI_AUTOTEST=1` scripts login → fonts → load font, prints
+  `AUTOTEST ...` and quits.
+- API facts for gpui-kit 0.9 (import paths, builders, async/global signatures): `docs/gpui-api.md`.
+
 Modules (`crates/chixie-core/src/`; CLI is `crates/chixie-cli/src/main.rs`):
 - `transport.rs` — serial + telnet line links, CH340/GD32 port auto-detect.
 - `grbl.rs` — char-counting streamer, error/alarm/cancel, realtime cmds.
