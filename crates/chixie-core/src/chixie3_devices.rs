@@ -82,8 +82,9 @@ fn profile(name: &str, p: &Value) -> DeviceProfile {
     d
 }
 
-/// ChiXie3 `DeviceType` enum order (0 = 步进抬笔写字机 confirmed on the verified board). The rest
-/// follow the order of the names in the binary: **VERIFY**. Laser / 3D printer fall back to stepper.
+/// ChiXie3 `DeviceType` drop-down order (captured 2026-11-07): 0 步进抬笔写字机, 1 舵机抬笔写字机,
+/// 2 电磁铁抬笔写字机, 3 激光雕刻机, 4 3D打印机, 5 自定义抬落笔指令设备. Laser / 3D printer are not
+/// supported and fall back to stepper.
 fn device_type(i: i64) -> DeviceType {
     match i {
         1 => DeviceType::ServoPenUp,
@@ -93,12 +94,13 @@ fn device_type(i: i64) -> DeviceType {
     }
 }
 
-/// ChiXie3 firmware index (3 = ChiXie_ESP32_Grbl on the verified board). Other indices: **VERIFY**.
+/// ChiXie3 固件 drop-down order (captured 2026-11-07): 0 Grbl, 1 Marlin, 2 ESP32_Grbl,
+/// 3 ChiXie_ESP32_Grbl.
 fn firmware(i: i64) -> Firmware {
     match i {
         0 => Firmware::Grbl,
-        1 => Firmware::Esp32Grbl,
-        2 => Firmware::Marlin,
+        1 => Firmware::Marlin,
+        2 => Firmware::Esp32Grbl,
         _ => Firmware::ChiXieEsp32Grbl,
     }
 }
@@ -226,6 +228,24 @@ DeviceParams=@Variant(\0\0\0\b\0\0\0\x1\0\0\0\xe\0g\0u\0\x61\0n\0g\0k\0u\0\0\0\b
         assert_eq!((d.write_speed, d.travel_speed, d.pause_after_down_s), (19000.0, 19000.0, 0.0));
         assert!(d.axis_map.is_identity());
         assert_eq!((d.pen_up_cmd(), d.pen_down_cmd()), ("G1G90 Z0".to_string(), "G1G90 Z2".to_string()));
+    }
+
+    #[test]
+    fn enum_orders_match_chixie3_dropdowns() {
+        let f: Vec<Firmware> = (0..4).map(firmware).collect();
+        assert_eq!(f, [Firmware::Grbl, Firmware::Marlin, Firmware::Esp32Grbl, Firmware::ChiXieEsp32Grbl]);
+        let t: Vec<DeviceType> = (0..6).map(device_type).collect();
+        assert_eq!(
+            t,
+            [
+                DeviceType::StepperPenUp,
+                DeviceType::ServoPenUp,
+                DeviceType::ElectromagnetPenUp,
+                DeviceType::StepperPenUp,
+                DeviceType::StepperPenUp,
+                DeviceType::CustomZ
+            ]
+        );
     }
 
     #[test]

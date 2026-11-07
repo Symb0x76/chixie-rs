@@ -254,13 +254,18 @@ reader that never executes class references.
   - `penDown`, `writeSpeed`, `pauseTime` (strings);
   - `x_plus` / `x_reduce` / `y_plus` / `y_reduce` (`X+`, `X-`, `Y+`, `Y-`).
 - Mapping into chixie-rs (`chixie_core::chixie3_devices`):
-  - `deviceType` 0 = 步进抬笔写字机 and `firmware` 3 = ChiXie_ESP32_Grbl match the verified
-    board.
-  - Other indices follow the order of the names in the binary: **VERIFY** by screenshotting the
-    drop-downs.
+  - Drop-down orders, captured from ChiXie3's 参数设置 on 2026-11-07:
+    - `firmware`: 0 Grbl, 1 Marlin, 2 ESP32_Grbl, 3 ChiXie_ESP32_Grbl.
+    - `deviceType`: 0 步进抬笔写字机, 1 舵机抬笔写字机, 2 电磁铁抬笔写字机, 3 激光雕刻机,
+      4 3D打印机, 5 自定义抬落笔指令设备.
   - `writeSpeed` sets both the write and travel feed. ChiXie3 streams every move at that one feed,
     and the board clamps it to `$110/$111` = 12000.
-- `pauseTime` (落笔后暂停) is emitted by us as `G4 P<s>` after each pen-down. ChiXie3's exact dwell
-  form is **VERIFY** with a capture.
+- 落笔后暂停 options are 0 / 0.1 / 0.2 / 0.5 / 1 s.
+  - With 0.5 s, ChiXie3 3.0.310 over Telnet sent **no dwell and no client-side delay**. That held
+    for both 步进 and 舵机: the line spacing stayed ≈ 6 ms, the same as with 0.
+  - Either the setting only acts on the USB path or it is unused. We emit a real `G4 P<s>` after
+    each pen-down instead.
+- Servo type (舵机): the field becomes 落笔角度 (度), but the stream is unchanged: `G1G90 Z<value>`
+  for both up and down.
 - `$$` (the machine's own specs) is read on connect with `Command::QueryMachine`. The GUI shows it
   under 设备 › 参数设置 › 机器规格 and uses the travel and max rate for the start-job warnings.

@@ -103,7 +103,8 @@ pub struct DeviceProfile {
     pub name: String,
     pub firmware: Firmware,
     pub device_type: DeviceType,
-    /// Pen Z positions (mm) for the Z-lift device types: `G1G90 Z<up>` / `G1G90 Z<down>`.
+    /// Pen positions for the Z-lift device types: `G1G90 Z<up>` / `G1G90 Z<down>`. mm for a stepper;
+    /// for a servo ChiXie3 calls it 落笔角度 (degrees) and still sends `G1G90 Z<value>`.
     pub pen_up_z: f32,
     pub pen_down_z: f32,
     /// Raw pen commands, used only by `DeviceType::CustomZ`.
@@ -113,7 +114,9 @@ pub struct DeviceProfile {
     /// both; the firmware clamps to its max rate ($110/$111).
     pub write_speed: f32,
     pub travel_speed: f32,
-    /// 落笔后暂停 (s): dwell after each pen-down so the pen settles. 0 = none.
+    /// 落笔后暂停 (s): dwell (`G4 P<s>`) after each pen-down so the pen settles. 0 = none.
+    /// ChiXie3 3.0.310 has the same setting but sent no dwell (and no delay) over Telnet with
+    /// 0.5 s for both stepper and servo types (captured 2026-11-07); ours is a real dwell.
     pub pause_after_down_s: f32,
     pub axis_map: AxisMap,
 }

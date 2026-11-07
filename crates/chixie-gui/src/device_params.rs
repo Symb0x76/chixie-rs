@@ -221,8 +221,15 @@ impl DeviceParams {
                 }))
             })
         });
+        let servo = p.device_type == DeviceType::ServoPenUp;
         let num = |f: F| {
             let (_, l, unit, ..) = NUMS.iter().find(|n| n.0 == f).copied().expect("field");
+            // A servo's pen position is an angle (ChiXie3: 落笔角度 / 度), still sent as Z.
+            let (l, unit) = match (servo, f) {
+                (true, F::UpZ) => ("抬笔角度", "度"),
+                (true, F::DownZ) => ("落笔角度", "度"),
+                _ => (l, unit),
+            };
             row(l, NumberInput::new(&self.input(f)).small().suffix(unit).into_any_element())
         };
         let max_feed = self.machine.as_ref().and_then(MachineSettings::max_feed);
