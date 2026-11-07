@@ -75,7 +75,32 @@ impl Default for UiSettings {
     }
 }
 
+impl PageSettings {
+    /// Writable area (paper minus margins), mm.
+    pub fn writable(&self) -> (f32, f32) {
+        let (w, h) = self.paper;
+        let (l, t, r, b) = self.margins;
+        ((w - l - r).max(1.0), (h - t - b).max(1.0))
+    }
+}
+
 impl Settings {
+    /// Layout parameters for the current page and style. Origin (0,0) is the top-left of the
+    /// writable area = the pen's start position, Y negative going down the page, matching what
+    /// ChiXie3 streams (docs/protocol.md).
+    pub fn page_params(&self) -> crate::layout::PageParams {
+        let (width, height) = self.page.writable();
+        crate::layout::PageParams {
+            mm_per_unit: crate::calibration::mm_per_unit_for_font_size(self.page.font_size),
+            line_height: self.page.line_height,
+            origin: (0.0, 0.0),
+            page: Some(crate::layout::PageBox { width, height }),
+            style: self.style.handwriting.clone(),
+            deformation: self.style.deformation.clone(),
+            ..Default::default()
+        }
+    }
+
     /// Default location: `<config dir>/chixie-rs/.../settings.toml`.
     pub fn default_path() -> Result<PathBuf> {
         let dirs = directories::ProjectDirs::from("", "", "chixie-rs")
@@ -271,6 +296,20 @@ stroke_deform_degree=1
         let has_password_key = text.lines().any(|l| l.trim_start().to_lowercase().starts_with("password"));
         assert!(!has_password_key, "no password field may be persisted:\n{text}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn page_params_follow_settings() {
+        let mut s = Settings::default();
+        s.page.font_size = 50.0;
+        s.style.handwriting.enabled = true;
+        let p = s.page_params();
+        assert_eq!(p.mm_per_unit, 0.5);
+        assert_eq!(p.page, Some(crate::layout::PageBox { width: 168.0, height: 257.0 }));
+        assert!(p.style.enabled);
+        // Landscape = swapped paper.
+        s.page.paper = (297.0, 210.0);
+        assert_eq!(s.page_params().page.unwrap().width, 255.0);
     }
 
     #[test]

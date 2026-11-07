@@ -8,6 +8,7 @@ pub mod credentials;
 pub mod deformation;
 pub mod device;
 pub mod discovery;
+pub mod editor;
 pub mod esp3d;
 pub mod font;
 pub mod gcode;

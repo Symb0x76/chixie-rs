@@ -10,7 +10,7 @@
 
 use crate::deformation::Deformation;
 use crate::font::Font;
-use crate::handwriting::{HandwritingStyle, Jitter, Rng, is_cjk};
+use crate::handwriting::{HandwritingStyle, Jitter, SALT_DEFORM, is_cjk, rng_for};
 
 /// One pen-down polyline in machine mm.
 pub type Stroke = Vec<(f32, f32)>;
@@ -26,6 +26,121 @@ pub struct Document {
     /// Characters with no glyph in the font (each skipped with a space-width advance), deduped,
     /// in first-seen order.
     pub missing: Vec<char>,
+    /// One box per input character (glyphs, spaces, newlines, missing glyphs), in text order.
+    pub boxes: Vec<CharBox>,
+    /// Every line, in order; caret positions on a line are `start..=end` (char indices).
+    pub lines: Vec<LineInfo>,
+    /// Layout origin (machine mm): caret x on an empty line.
+    pub origin: (f32, f32),
+}
+
+/// Where one input character sits (machine mm; y up, so `top > bottom`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharBox {
+    pub page: usize,
+    pub line: usize,
+    pub x0: f32,
+    pub x1: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineInfo {
+    pub page: usize,
+    pub top: f32,
+    pub bottom: f32,
+    /// First char index on the line.
+    pub start: usize,
+    /// Caret index at the line's end: the index of its '\n', or of the first char of the next
+    /// (wrapped) line, or the text length on the last line.
+    pub end: usize,
+}
+
+/// A caret position on the page (machine mm).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Caret {
+    pub page: usize,
+    pub line: usize,
+    pub x: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl Document {
+    /// Line holding caret index `i`. At a wrap boundary the caret belongs to the next line.
+    pub fn line_of(&self, i: usize) -> usize {
+        self.lines
+            .iter()
+            .rposition(|l| l.start <= i && i <= l.end)
+            .unwrap_or(self.lines.len().saturating_sub(1))
+    }
+
+    /// Caret geometry for index `i` (0..=text length).
+    pub fn caret(&self, i: usize) -> Caret {
+        let li = self.line_of(i);
+        let Some(l) = self.lines.get(li) else {
+            return Caret { page: 0, line: 0, x: self.origin.0, top: self.origin.1, bottom: self.origin.1 - 10.0 };
+        };
+        let x = match self.boxes.get(i) {
+            Some(b) if b.line == li => b.x0,
+            _ if i > l.start => self.boxes[i - 1].x1,
+            _ => self.origin.0,
+        };
+        Caret { page: l.page, line: li, x, top: l.top, bottom: l.bottom }
+    }
+
+    /// Nearest caret index on line `li` for x (mm).
+    pub fn index_on_line(&self, li: usize, x: f32) -> usize {
+        let l = self.lines[li];
+        for k in l.start..l.end {
+            let b = &self.boxes[k];
+            if x < (b.x0 + b.x1) / 2.0 {
+                return k;
+            }
+        }
+        l.end
+    }
+
+    /// Caret index for a point on `page` (mm): the line under y (or the nearest), then nearest x.
+    pub fn index_at(&self, page: usize, x: f32, y: f32) -> usize {
+        let best = self
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.page == page)
+            .min_by(|(_, a), (_, b)| {
+                let d = |l: &LineInfo| if y <= l.top && y >= l.bottom { 0.0 } else { (y - (l.top + l.bottom) / 2.0).abs() };
+                d(a).total_cmp(&d(b))
+            })
+            .map(|(i, _)| i);
+        match best {
+            Some(li) => self.index_on_line(li, x),
+            None => self.boxes.len(),
+        }
+    }
+
+    /// Caret index one line up (`dir < 0`) or down, keeping x; clamps to start / end of text.
+    pub fn vertical_move(&self, i: usize, dir: i32) -> usize {
+        let li = self.line_of(i) as i64 + dir as i64;
+        if li < 0 {
+            return 0;
+        }
+        if li as usize >= self.lines.len() {
+            return self.boxes.len();
+        }
+        self.index_on_line(li as usize, self.caret(i).x)
+    }
+
+    /// (min_x, min_y, max_x, max_y) over every point on every page, in machine mm; `None` when
+    /// nothing is drawn. Pages share one coordinate frame (each sheet is drawn from the origin).
+    pub fn bounds(&self) -> Option<(f32, f32, f32, f32)> {
+        let mut it = self.pages.iter().flat_map(|p| p.strokes.iter().flatten());
+        let &(x, y) = it.next()?;
+        Some(it.fold((x, y, x, y), |(a, b, c, d), &(x, y)| (a.min(x), b.min(y), c.max(x), d.max(y))))
+    }
+
+    pub fn stroke_count(&self) -> usize {
+        self.pages.iter().map(|p| p.strokes.len()).sum()
+    }
 }
 
 /// Writable area measured from `origin`: x grows right, y grows *down* the page (mm).
@@ -70,113 +185,171 @@ impl Default for PageParams {
     }
 }
 
-/// Lay out `text` with `font`. Unknown characters advance like a space and are listed in
-/// `Document::missing`.
+/// Lay out `text` with `font`, using character positions as ids (`0..n`). Unknown characters
+/// advance like a space and are listed in `Document::missing`. See [`layout_ids`].
+pub fn layout(text: &str, font: &Font, p: &PageParams) -> Document {
+    let chars: Vec<char> = text.chars().collect();
+    let ids: Vec<u64> = (0..chars.len() as u64).collect();
+    layout_ids(&chars, &ids, font, p)
+}
+
+/// Pen state while laying out; owns the line/page bookkeeping.
+struct Pen<'p> {
+    p: &'p PageParams,
+    doc: Document,
+    page: Page,
+    page_ix: usize,
+    cx: f32,       // cursor x in mm, relative to origin
+    line_top: f32, // mm below origin for the current line
+    line_start: usize,
+}
+
+impl Pen<'_> {
+    fn close_line(&mut self, end: usize) {
+        let (_, oy) = self.p.origin;
+        self.doc.lines.push(LineInfo {
+            page: self.page_ix,
+            top: oy - self.line_top,
+            bottom: oy - (self.line_top + self.p.line_height),
+            start: self.line_start,
+            end,
+        });
+    }
+
+    /// Finish the line at caret index `end`; the next line starts at char `next`.
+    fn newline(&mut self, end: usize, next: usize) {
+        self.close_line(end);
+        self.cx = 0.0;
+        self.line_top += self.p.line_height;
+        if let Some(b) = self.p.page
+            && self.line_top + self.p.line_height > b.height
+        {
+            self.doc.pages.push(std::mem::take(&mut self.page));
+            self.page_ix += 1;
+            self.line_top = 0.0;
+        }
+        self.line_start = next;
+    }
+
+    fn push_box(&mut self, x0: f32) {
+        let ox = self.p.origin.0;
+        let line = self.doc.lines.len();
+        self.doc.boxes.push(CharBox { page: self.page_ix, line, x0: ox + x0, x1: ox + self.cx });
+    }
+}
+
+/// Lay out `chars` with stable per-character `ids` (same length). Each character's jitter and
+/// deformation come from its own id-keyed random stream, so editing one character never moves the
+/// others; a line's start offset is keyed by the id of its first character.
 ///
 /// With jitter and deformation off, every coordinate uses the original expressions (see module
-/// docs). With them on, values are drawn in text order from the style's seed: line start offset,
-/// then per glyph spacing / space width, vertical offset, and deformation.
-pub fn layout(text: &str, font: &Font, p: &PageParams) -> Document {
+/// docs), so the output stays byte-identical to the pre-refactor pipeline.
+pub fn layout_ids(chars: &[char], ids: &[u64], font: &Font, p: &PageParams) -> Document {
+    assert_eq!(chars.len(), ids.len(), "one id per character");
     let s = p.mm_per_unit;
     let (ox, oy) = p.origin;
     let jitter_on = p.style.enabled;
     let deform_on = p.deformation.is_active();
     let mut jit = Jitter::new(&p.style);
-    // Separate stream so turning deformation on doesn't reshuffle the jitter (and vice versa).
-    let mut drng = Rng::new(p.style.seed ^ 0xD3F0_12A7_5EED_0001);
 
-    let mut doc = Document::default();
-    let mut page = Page::default();
-    let mut cx = 0.0f32; // cursor x in mm, relative to origin
-    let mut line_top = 0.0f32; // mm below origin for the current line
+    let mut pen = Pen {
+        p,
+        doc: Document { origin: p.origin, ..Default::default() },
+        page: Page::default(),
+        page_ix: 0,
+        cx: 0.0,
+        line_top: 0.0,
+        line_start: 0,
+    };
     let mut prev: Option<char> = None;
+    // Jitter: the next placed character starts a line (and maybe a paragraph).
+    let (mut fresh_line, mut fresh_paragraph) = (true, true);
 
-    let newline = |cx: &mut f32, line_top: &mut f32, page: &mut Page, doc: &mut Document| {
-        *cx = 0.0;
-        *line_top += p.line_height;
-        if let Some(b) = p.page
-            && *line_top + p.line_height > b.height
-        {
-            doc.pages.push(std::mem::take(page));
-            *line_top = 0.0;
-        }
-    };
-    // Start-of-line jitter (every line, per captures) and paragraph indent (first line only).
-    let start_line = |cx: &mut f32, jit: &mut Jitter, paragraph: bool| {
-        if jitter_on {
-            *cx = jit.line_start();
-            if paragraph && let Some(indent) = p.style.first_line_indent {
-                *cx += indent.sample(jit.rng());
+    for (i, (&ch, &id)) in chars.iter().zip(ids).enumerate() {
+        if jitter_on && fresh_line && ch != '\n' {
+            pen.cx = jit.line_start(id);
+            if fresh_paragraph && let Some(indent) = jit.indent(id) {
+                pen.cx += indent;
             }
+            fresh_line = false;
+            fresh_paragraph = false;
         }
-    };
-    start_line(&mut cx, &mut jit, true);
-
-    for ch in text.chars() {
+        let x0 = pen.cx;
         match ch {
             '\n' => {
-                newline(&mut cx, &mut line_top, &mut page, &mut doc);
-                start_line(&mut cx, &mut jit, true);
+                pen.push_box(x0);
+                pen.newline(i, i + 1);
+                (fresh_line, fresh_paragraph) = (true, true);
                 prev = None;
                 continue;
             }
             ' ' => {
                 if jitter_on {
-                    cx += jit.space(prev);
+                    pen.cx += jit.space(prev, id);
                 } else {
-                    cx += font.get(' ').map(|gl| gl.advance * s).unwrap_or(p.space_width);
-                    cx += p.char_spacing;
+                    pen.cx += font.get(' ').map(|gl| gl.advance * s).unwrap_or(p.space_width);
+                    pen.cx += p.char_spacing;
                 }
+                pen.push_box(x0);
                 continue;
             }
             _ => {}
         }
         let Some(glyph) = font.get(ch) else {
-            if !doc.missing.contains(&ch) {
-                doc.missing.push(ch);
+            if !pen.doc.missing.contains(&ch) {
+                pen.doc.missing.push(ch);
             }
             if jitter_on {
-                cx += jit.space(Some(ch));
+                pen.cx += jit.space(Some(ch), id);
             } else {
-                cx += p.space_width + p.char_spacing;
+                pen.cx += p.space_width + p.char_spacing;
             }
+            pen.push_box(x0);
             prev = Some(ch);
             continue;
         };
         // Wrap before a glyph that would cross the right edge (never on an empty line).
         if let Some(b) = p.page
-            && cx > 0.0
-            && cx + glyph.advance * s > b.width
+            && pen.cx > 0.0
+            && pen.cx + glyph.advance * s > b.width
         {
-            newline(&mut cx, &mut line_top, &mut page, &mut doc);
-            start_line(&mut cx, &mut jit, false);
+            pen.newline(i, i);
+            if jitter_on {
+                pen.cx = jit.line_start(id);
+            }
         }
+        let x0 = pen.cx;
+        let (cx, line_top) = (pen.cx, pen.line_top);
         if !jitter_on && !deform_on {
             for stroke in &glyph.strokes {
-                page.strokes.push(
+                pen.page.strokes.push(
                     stroke
                         .iter()
                         .map(|&(gx, gy)| (ox + cx + gx * s, oy - (line_top + gy * s)))
                         .collect(),
                 );
             }
-            cx += glyph.advance * s + p.char_spacing;
+            pen.cx += glyph.advance * s + p.char_spacing;
         } else {
-            let voff = if jitter_on { jit.vertical() } else { 0.0 };
+            let voff = if jitter_on { jit.vertical(id) } else { 0.0 };
+            let mut drng = rng_for(p.style.seed, SALT_DEFORM, id);
             let strokes = p.deformation.apply(&glyph.strokes, is_cjk(ch), s, &mut drng);
             for stroke in &strokes {
-                page.strokes.push(
+                pen.page.strokes.push(
                     stroke
                         .iter()
                         .map(|&(gx, gy)| (ox + cx + gx * s, oy - (line_top + voff + gy * s)))
                         .collect(),
                 );
             }
-            cx += glyph.advance * s + if jitter_on { jit.spacing(ch) } else { p.char_spacing };
+            pen.cx += glyph.advance * s + if jitter_on { jit.spacing(ch, id) } else { p.char_spacing };
         }
+        pen.push_box(x0);
         prev = Some(ch);
     }
-    doc.pages.push(page);
+    pen.close_line(chars.len());
+    let mut doc = pen.doc;
+    doc.pages.push(pen.page);
     doc
 }
 
@@ -265,6 +438,104 @@ mod tests {
                 assert_eq!(new, legacy::text_to_gcode(t, &font, p, &d), "text {t:?} params {p:?}");
             }
         }
+    }
+
+    fn dot_font() -> Font {
+        // '.' : one point, advance 2; 'A' : advance 3. Simple numbers for box checks.
+        Font {
+            glyphs: HashMap::from([
+                ('.', Glyph { advance: 2.0, strokes: vec![vec![(0.0, 0.0)]] }),
+                ('A', Glyph { advance: 3.0, strokes: vec![vec![(0.0, 0.0), (1.0, 1.0)]] }),
+            ]),
+        }
+    }
+
+    #[test]
+    fn boxes_and_lines_cover_every_char() {
+        let p = PageParams { space_width: 1.0, ..Default::default() };
+        let doc = layout(".A \n.x", &dot_font(), &p);
+        // . A ' ' \n . x  -> 6 boxes; 'x' is missing (space width).
+        assert_eq!(doc.boxes.len(), 6);
+        let xs: Vec<(f32, f32)> = doc.boxes.iter().map(|b| (b.x0, b.x1)).collect();
+        assert_eq!(xs, vec![(0.0, 2.0), (2.0, 5.0), (5.0, 6.0), (6.0, 6.0), (0.0, 2.0), (2.0, 3.0)]);
+        assert_eq!(doc.lines.len(), 2);
+        assert_eq!((doc.lines[0].start, doc.lines[0].end), (0, 3)); // ends at the '\n'
+        assert_eq!((doc.lines[1].start, doc.lines[1].end), (4, 6));
+        assert_eq!(doc.lines[1].top, -10.0);
+    }
+
+    #[test]
+    fn caret_and_hit_test_round_trip() {
+        let doc = layout("..\n.", &dot_font(), &PageParams::default());
+        // Caret x for every index; index 2 is end of line 0 (before '\n').
+        let carets: Vec<(usize, f32)> = (0..=4).map(|i| (doc.caret(i).line, doc.caret(i).x)).collect();
+        assert_eq!(carets, vec![(0, 0.0), (0, 2.0), (0, 4.0), (1, 0.0), (1, 2.0)]);
+        // Clicking left/right halves of a glyph picks the nearer boundary.
+        assert_eq!(doc.index_at(0, 0.9, -5.0), 0);
+        assert_eq!(doc.index_at(0, 1.1, -5.0), 1);
+        assert_eq!(doc.index_at(0, 99.0, -5.0), 2);
+        assert_eq!(doc.index_at(0, 99.0, -15.0), 4);
+        // Up/down keep x.
+        assert_eq!(doc.vertical_move(1, 1), 4);
+        assert_eq!(doc.vertical_move(4, -1), 1);
+        assert_eq!(doc.vertical_move(0, -1), 0);
+    }
+
+    #[test]
+    fn wrap_boundary_caret_belongs_to_next_line() {
+        let p = PageParams { page: Some(PageBox { width: 5.0, height: 100.0 }), ..Default::default() };
+        let doc = layout("...", &dot_font(), &p); // 2 dots per line
+        assert_eq!(doc.lines.len(), 2);
+        assert_eq!((doc.lines[0].start, doc.lines[0].end), (0, 2));
+        assert_eq!(doc.caret(2).line, 1);
+        assert_eq!(doc.caret(2).x, 0.0);
+    }
+
+    #[test]
+    fn empty_text_has_one_line_and_origin_caret() {
+        let doc = layout("", &dot_font(), &PageParams { origin: (3.0, 7.0), ..Default::default() });
+        assert_eq!(doc.lines.len(), 1);
+        assert_eq!(doc.caret(0).x, 3.0);
+        assert_eq!(doc.caret(0).top, 7.0);
+    }
+
+    #[test]
+    fn editing_does_not_reshuffle_other_characters() {
+        let font = Font::from_json(FIXTURE).unwrap();
+        let p = PageParams {
+            style: HandwritingStyle { enabled: true, seed: 5, ..Default::default() },
+            deformation: Deformation { enabled: true, base: true, ..Default::default() },
+            ..Default::default()
+        };
+        // Same characters with the same ids, one inserted at the front with a new id.
+        let base: Vec<char> = "你好你好".chars().collect();
+        let ids: Vec<u64> = vec![10, 11, 12, 13];
+        let a = layout_ids(&base, &ids, &font, &p);
+        let mut chars2 = vec!['A'];
+        chars2.extend(&base);
+        let mut ids2 = vec![99];
+        ids2.extend(&ids);
+        let b = layout_ids(&chars2, &ids2, &font, &p);
+        // Each original glyph keeps its shape (strokes relative to the glyph's own first point);
+        // only its position shifts. 'A' adds 2 strokes in front.
+        let rel = |d: &Document, skip: usize| -> Vec<Vec<(i32, i32)>> {
+            d.pages[0].strokes[skip..]
+                .iter()
+                .map(|s| s.iter().map(|&(x, y)| (((x - s[0].0) * 1000.0) as i32, ((y - s[0].1) * 1000.0) as i32)).collect())
+                .collect()
+        };
+        assert_eq!(rel(&a, 0), rel(&b, 2));
+    }
+
+    #[test]
+    fn bounds_cover_all_pages() {
+        let doc = Document {
+            pages: vec![Page { strokes: vec![vec![(1.0, -2.0), (5.0, -1.0)]] }, Page { strokes: vec![vec![(0.5, -9.0)]] }],
+            ..Default::default()
+        };
+        assert_eq!(doc.bounds(), Some((0.5, -9.0, 5.0, -1.0)));
+        assert_eq!(doc.stroke_count(), 2);
+        assert_eq!(Document::default().bounds(), None);
     }
 
     #[test]

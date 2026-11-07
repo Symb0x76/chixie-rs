@@ -124,47 +124,70 @@ pub fn is_cjk(c: char) -> bool {
         0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF | 0x20000..=0x3134F)
 }
 
-/// Per-line jitter state: draws values in a fixed order so layouts are reproducible.
+/// Independent random stream for (`seed`, `salt`, `id`). Each character gets its own stream keyed
+/// by its stable id, so inserting or deleting text never reshuffles the jitter of the other
+/// characters (ChiXie3 bakes randomness per character the same way).
+pub fn rng_for(seed: u64, salt: u64, id: u64) -> Rng {
+    let mut r = Rng::new(seed ^ salt ^ id.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    Rng::new(r.next_u64())
+}
+
+const SALT_LINE: u64 = 0x4C49_4E45_0000_0001;
+const SALT_GLYPH: u64 = 0x474C_5948_0000_0002;
+const SALT_INDENT: u64 = 0x494E_4445_0000_0003;
+/// Deformation draws from its own stream so toggling jitter doesn't change deformation.
+pub const SALT_DEFORM: u64 = 0x4445_464F_0000_0004;
+
+/// Jitter values for each character, keyed by the character's stable id.
 pub struct Jitter<'a> {
     style: &'a HandwritingStyle,
-    rng: Rng,
+    /// Last vertical offset on the current line (for `intelligent_vertical_offset`).
     walk: Option<f32>,
 }
 
 impl<'a> Jitter<'a> {
     pub fn new(style: &'a HandwritingStyle) -> Self {
-        Self { style, rng: Rng::new(style.seed), walk: None }
+        Self { style, walk: None }
     }
 
-    pub fn rng(&mut self) -> &mut Rng {
-        &mut self.rng
+    fn rng(&self, salt: u64, id: u64) -> Rng {
+        rng_for(self.style.seed, salt, id)
     }
 
-    pub fn line_start(&mut self) -> f32 {
+    /// X offset of a line's first character; `id` = that character's id.
+    pub fn line_start(&mut self, id: u64) -> f32 {
         self.walk = None;
-        self.style.line_start_offset.sample(&mut self.rng)
+        self.style.line_start_offset.sample(&mut self.rng(SALT_LINE, id))
     }
 
-    pub fn spacing(&mut self, c: char) -> f32 {
+    /// Paragraph first-line indent, if configured.
+    pub fn indent(&self, id: u64) -> Option<f32> {
+        self.style.first_line_indent.map(|s| s.sample(&mut self.rng(SALT_INDENT, id)))
+    }
+
+    pub fn spacing(&self, c: char, id: u64) -> f32 {
         let s = &self.style;
-        if is_cjk(c) { s.char_spacing_zh } else { s.char_spacing_en }.sample(&mut self.rng)
+        if is_cjk(c) { s.char_spacing_zh } else { s.char_spacing_en }.sample(&mut self.rng(SALT_GLYPH, id))
     }
 
     /// Space width; `prev` is the character before the space (decides zh vs en).
-    pub fn space(&mut self, prev: Option<char>) -> f32 {
+    pub fn space(&self, prev: Option<char>, id: u64) -> f32 {
         let s = &self.style;
-        if prev.is_some_and(is_cjk) { s.space_width_zh } else { s.space_width_en }.sample(&mut self.rng)
+        if prev.is_some_and(is_cjk) { s.space_width_zh } else { s.space_width_en }.sample(&mut self.rng(SALT_GLYPH, id))
     }
 
-    pub fn vertical(&mut self) -> f32 {
+    pub fn vertical(&mut self, id: u64) -> f32 {
         let r = self.style.vertical_offset;
+        // Second draw of the glyph stream (the first is spacing).
+        let mut rng = self.rng(SALT_GLYPH, id);
+        rng.next_u64();
         if !self.style.intelligent_vertical_offset {
-            return r.sample(&mut self.rng);
+            return r.sample(&mut rng);
         }
         let step = (r.max - r.min) / 3.0;
         let mid = (r.min + r.max) / 2.0;
         let prev = self.walk.unwrap_or(mid);
-        let mut v = prev + (self.rng.unit() * 2.0 - 1.0) * step;
+        let mut v = prev + (rng.unit() * 2.0 - 1.0) * step;
         if self.style.random_correct_offset {
             v += (mid - v) * 0.5;
         }
@@ -232,14 +255,29 @@ mod tests {
     fn samples_stay_in_spans() {
         let style = HandwritingStyle { enabled: true, seed: 7, ..Default::default() };
         let mut j = Jitter::new(&style);
-        for _ in 0..500 {
-            assert!(style.char_spacing_zh.contains(j.spacing('你')));
-            assert!(style.char_spacing_en.contains(j.spacing('A')));
-            assert!(style.space_width_zh.contains(j.space(Some('你'))));
-            assert!(style.space_width_en.contains(j.space(Some('A'))));
-            assert!(style.vertical_offset.contains(j.vertical()));
-            assert!(style.line_start_offset.contains(j.line_start()));
+        for id in 0..500 {
+            assert!(style.char_spacing_zh.contains(j.spacing('你', id)));
+            assert!(style.char_spacing_en.contains(j.spacing('A', id)));
+            assert!(style.space_width_zh.contains(j.space(Some('你'), id)));
+            assert!(style.space_width_en.contains(j.space(Some('A'), id)));
+            assert!(style.vertical_offset.contains(j.vertical(id)));
+            assert!(style.line_start_offset.contains(j.line_start(id)));
         }
+    }
+
+    #[test]
+    fn draws_depend_on_id_not_call_order() {
+        let style = HandwritingStyle { enabled: true, seed: 7, ..Default::default() };
+        let mut a = Jitter::new(&style);
+        let mut b = Jitter::new(&style);
+        // b draws for other ids first; a's values for id 42 must not care.
+        for id in 0..10 {
+            b.spacing('你', id);
+            b.vertical(id);
+        }
+        assert_eq!(a.spacing('你', 42), b.spacing('你', 42));
+        assert_eq!(a.vertical(42), b.vertical(42));
+        assert_ne!(a.spacing('你', 42), a.spacing('你', 43));
     }
 
     #[test]
@@ -252,8 +290,8 @@ mod tests {
         };
         let mut j = Jitter::new(&style);
         let mut prev = None::<f32>;
-        for _ in 0..500 {
-            let v = j.vertical();
+        for id in 0..500 {
+            let v = j.vertical(id);
             assert!(style.vertical_offset.contains(v));
             if let Some(p) = prev {
                 assert!((v - p).abs() <= 0.3 / 3.0 + 1e-6, "step {}", v - p);
