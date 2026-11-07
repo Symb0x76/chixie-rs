@@ -48,10 +48,16 @@ Base host `https://chixie.com.cn/client_api/`. Envelope: `{status, msg, data, pa
 **Key:** Fernet key = login `backup_token` (44-char urlsafe-b64) with its **last two
 characters swapped**.
 
-**Blob base64:** the `data` string is a Fernet token with **junk bytes appended after the
-`=` padding** (length %4 == 2, one `=` two chars from the end). Python's lenient
-`urlsafe_b64decode` stops at the padding; a strict decoder must cut at the end of the `=`
-run before decoding. (src/font.rs `b64_url`.)
+**Blob base64:** the `data` string is a Fernet token with **2 junk characters appended**,
+so its length mod 4 is 2.
+- When the token has `=` padding, the junk follows the `=` run. Python's lenient
+  `urlsafe_b64decode` stops at the padding; a strict decoder must cut at the end of the `=` run.
+- When the token needs no padding (its byte length is divisible by 3), the junk sits directly
+  after the data and there is no `=` at all. Fonts 4, 11, 18, 144 and 2417 are like this, which
+  was found on 2026-11-07. The decoder then tries every cut that leaves a multiple of 4
+  characters and lets the HMAC pick the right one.
+- Code: src/font.rs `token_candidates`.
+- `chixie font-check --all` downloads every collected font and reports the result.
 
 **Fernet timestamp:** decode must ignore the token timestamp — the server clock runs ahead
 of the client, so a strict future-timestamp check rejects every token. We decode Fernet
