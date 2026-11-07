@@ -18,9 +18,13 @@ mod doc_view;
 mod fake;
 mod file_ops;
 mod fonts;
+mod icons;
 mod login;
+mod ribbon;
 mod sim;
 mod state;
+mod style_dialog;
+mod templates_view;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -28,7 +32,8 @@ use std::time::Duration;
 use chixie_core::config::Settings;
 use chixie_core::editor::EditDoc;
 use chixie_core::session::{self, HEARTBEAT_EVERY};
-use gpui_kit::component::{Theme, ThemeMode, WindowExt as _};
+use chixie_core::template::TemplateStore;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 
 use crate::app::ChiXieApp;
@@ -64,13 +69,16 @@ fn main() {
     let opener = if fake { sim::opener(Duration::from_millis(delay)) } else { chixie_core::device::default_opener() };
     let (device, device_events, _device_join) = chixie_core::device::spawn(opener);
 
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+    gpui_kit::application().with_assets(icons::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         doc_view::bind_keys(cx);
-        if settings.ui.dark {
-            Theme::change(ThemeMode::Dark, None, cx);
-        }
-        cx.set_global(AppState { settings, settings_path, session, user: None, active_font: None });
+        ribbon::set_theme(settings.ui.dark, None, cx);
+        let templates_path = TemplateStore::path_next_to(&settings_path);
+        let templates = TemplateStore::load(&templates_path).unwrap_or_else(|e| {
+            log::warn!("{e}; using built-in templates");
+            TemplateStore::builtins()
+        });
+        cx.set_global(AppState { settings, settings_path, session, user: None, active_font: None, templates, templates_path });
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
@@ -163,7 +171,7 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
         let device = cx.update(|cx| app.read(cx).device.clone());
         cx.update(|cx| {
             app.update(cx, |a, cx| {
-                (a.tab, a.show_pane) = (4, true);
+                (a.tab, a.show_pane) = (app::TAB_DEVICE, true);
                 cx.notify();
             });
             device.update(cx, |d, cx| d.connect(cx));
@@ -201,7 +209,61 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
                 d.summary()
             );
         });
-        cx.background_executor().timer(pause(3000)).await; // leave time for a screenshot
+        // `SHOT_*` lines tell an outside script when to take a screenshot (state held 2.5 s).
+        let shot = |name: &str| {
+            use std::io::Write as _;
+            println!("SHOT_{name}");
+            let _ = std::io::stdout().flush();
+        };
+        shot("DEVICE");
+        cx.background_executor().timer(pause(2500)).await;
+
+        // Templates: ruled paper, then the composition grid; guides never reach the G-code.
+        for name in ["信纸 22 行", "作文格 20×20"] {
+            cx.update(|cx| {
+                app.update(cx, |a, cx| {
+                    a.tab = 1;
+                    a.show_pane = false;
+                    a.apply_template(Some(name.to_string()), cx);
+                })
+            });
+            cx.background_executor().timer(pause(400)).await;
+            cx.update(|cx| {
+                let st = cx.global::<AppState>();
+                let doc = app.read(cx).doc.read(cx).document();
+                let profile = &st.settings.device.profile;
+                let gcode: String = doc.pages.iter().map(|p| chixie_core::gcode::emit(p, profile)).collect();
+                let guides_in_gcode = doc.pages[0].guides.iter().any(|g| gcode.contains(&format!("X{:.3} Y{:.3}", g.a.0, g.a.1)));
+                println!(
+                    "AUTOTEST_TEMPLATE name={name:?} active={:?} paper={:?} pages={} lines_p0={} guides_p0={} strokes={} guides_in_gcode={guides_in_gcode}",
+                    st.settings.page.template,
+                    st.settings.page.paper,
+                    doc.pages.len(),
+                    doc.lines.iter().filter(|l| l.page == 0).count(),
+                    doc.pages[0].guides.len(),
+                    doc.stroke_count(),
+                );
+            });
+            shot(if name.starts_with('信') { "RULED" } else { "GRID" });
+            cx.background_executor().timer(pause(2500)).await;
+        }
+        let _ = cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |a, cx| a.open_backstage(app::Stage::Templates, window, cx));
+        });
+        shot("BACKSTAGE");
+        cx.background_executor().timer(pause(2500)).await;
+        let _ = cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |a, cx| a.open_backstage(app::Stage::New, window, cx));
+        });
+        shot("NEW");
+        cx.background_executor().timer(pause(2500)).await;
+        let closed = cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |a, cx| {
+                a.close_backstage(window, cx);
+                a.backstage.is_none()
+            })
+        });
+        println!("AUTOTEST_BACKSTAGE closed={closed:?}");
         cx.update(|cx| cx.quit());
     })
     .detach();

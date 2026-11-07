@@ -56,6 +56,8 @@ pub struct PageSettings {
 pub struct UiSettings {
     pub dark: bool,
     pub locale: String,
+    /// Draw template ruling (rows / grid) in the editor.
+    pub show_guides: bool,
 }
 
 impl Default for DeviceSettings {
@@ -73,7 +75,7 @@ impl Default for PageSettings {
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { dark: false, locale: "zh-CN".into() }
+        Self { dark: false, locale: "zh-CN".into(), show_guides: true }
     }
 }
 

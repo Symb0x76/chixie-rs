@@ -8,6 +8,7 @@ use std::sync::Arc;
 use chixie_core::config::Settings;
 use chixie_core::font::Font;
 use chixie_core::session::SessionHandle;
+use chixie_core::template::{Template, TemplateStore};
 use gpui_kit::Global;
 
 pub struct User {
@@ -28,6 +29,8 @@ pub struct AppState {
     pub session: SessionHandle,
     pub user: Option<User>,
     pub active_font: Option<ActiveFont>,
+    pub templates: TemplateStore,
+    pub templates_path: PathBuf,
 }
 
 impl Global for AppState {}
@@ -37,6 +40,17 @@ impl AppState {
     pub fn save_settings(&self) {
         if let Err(e) = self.settings.save(&self.settings_path) {
             log::warn!("saving settings to {}: {e}", self.settings_path.display());
+        }
+    }
+
+    /// The page template in use (`settings.page.template`), if it still exists.
+    pub fn active_template(&self) -> Option<Template> {
+        self.settings.page.template.as_ref().and_then(|n| self.templates.get(n)).cloned()
+    }
+
+    pub fn save_templates(&self) {
+        if let Err(e) = self.templates.save(&self.templates_path) {
+            log::warn!("saving templates to {}: {e}", self.templates_path.display());
         }
     }
 }

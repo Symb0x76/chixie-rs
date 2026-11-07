@@ -16,6 +16,7 @@ use chixie_core::config::{PageSettings, Settings};
 use chixie_core::editor::EditDoc;
 use chixie_core::font::Font;
 use chixie_core::handwriting::StyleFile;
+use chixie_core::template::Template;
 use chixie_core::layout::{self, Document};
 use gpui_kit::*;
 
@@ -122,7 +123,7 @@ pub struct DocView {
     caret_visible: bool,
     reveal_caret: bool,
     /// What the current layout was computed from, to skip needless relayouts.
-    layout_key: Option<(Option<i64>, PageSettings, StyleFile)>,
+    layout_key: Option<(Option<i64>, PageSettings, StyleFile, Option<Template>)>,
     dirty_draft: bool,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
@@ -213,7 +214,7 @@ impl DocView {
 
     fn relayout_if_changed(&mut self, cx: &mut Context<Self>) {
         let st = cx.global::<AppState>();
-        let key = (st.active_font.as_ref().map(|f| f.id), st.settings.page.clone(), st.settings.style.clone());
+        let key = (st.active_font.as_ref().map(|f| f.id), st.settings.page.clone(), st.settings.style.clone(), st.active_template());
         if self.layout_key.as_ref() != Some(&key) {
             self.layout_key = Some(key);
             self.relayout(cx);
@@ -222,7 +223,7 @@ impl DocView {
 
     fn relayout(&mut self, cx: &mut Context<Self>) {
         let st = cx.global::<AppState>();
-        let params = st.settings.page_params();
+        let params = st.settings.page_params_with(st.active_template().as_ref());
         let empty = Font::default();
         let (font, has_font) = match &st.active_font {
             Some(f) => (f.font.clone(), true),
@@ -541,6 +542,7 @@ impl Render for DocView {
         let marked = self.doc.marked();
         let show_caret = focused && self.caret_visible && sel.is_empty();
         let zoom = self.zoom;
+        let show_guides = cx.global::<AppState>().settings.ui.show_guides;
         let geom_out = self.geom.clone();
         let reveal = std::mem::take(&mut self.reveal_caret);
         let scroll = self.scroll.clone();
@@ -601,12 +603,21 @@ impl Render for DocView {
                             let o = g.page_origin(k);
                             let paper = Bounds::new(o, size(px(g.page_w), px(g.page_h)));
                             window.paint_quad(fill(paper, gpui_kit::white()));
-                            let (l, t, r, b) = page.margins;
-                            let guides = Bounds::from_corners(
-                                o + point(px(l * g.zoom), px(t * g.zoom)),
-                                o + point(px(g.page_w - r * g.zoom), px(g.page_h - b * g.zoom)),
-                            );
-                            window.paint_quad(outline(guides, guide.opacity(0.5), BorderStyle::Dashed));
+                            let ruled = layout_doc.pages.get(k).is_some_and(|p| !p.guides.is_empty());
+                            if !ruled {
+                                let (l, t, r, b) = page.margins;
+                                let guides = Bounds::from_corners(
+                                    o + point(px(l * g.zoom), px(t * g.zoom)),
+                                    o + point(px(g.page_w - r * g.zoom), px(g.page_h - b * g.zoom)),
+                                );
+                                window.paint_quad(outline(guides, guide.opacity(0.5), BorderStyle::Dashed));
+                            }
+                        }
+                        // Template ruling (pre-printed on the paper; never plotted).
+                        if show_guides {
+                            for (k, p) in layout_doc.pages.iter().enumerate() {
+                                paint_guides(window, &p.guides, |x, y| g.screen(k, x, y), g.zoom);
+                            }
                         }
                         // Selection.
                         for i in sel.clone() {
@@ -679,5 +690,34 @@ impl Render for DocView {
                 .min_w(px(total_w))
                 .h(px(total_h)),
             )
+    }
+}
+
+/// Light-blue ruling lines; dashed ones are cut into 1.2 mm dashes.
+pub fn paint_guides(window: &mut Window, guides: &[chixie_core::layout::Guide], to_px: impl Fn(f32, f32) -> Point<Pixels>, zoom: f32) {
+    if guides.is_empty() {
+        return;
+    }
+    let color = hsla(210.0 / 360.0, 0.65, 0.55, 0.55);
+    let mut path = PathBuilder::stroke(px(1.0));
+    for gd in guides {
+        if gd.dashed {
+            let (dx, dy) = (gd.b.0 - gd.a.0, gd.b.1 - gd.a.1);
+            let len = (dx * dx + dy * dy).sqrt();
+            let n = (len / 1.2).floor().max(1.0) as usize;
+            for k in (0..n).step_by(2) {
+                let t0 = k as f32 / n as f32;
+                let t1 = ((k + 1) as f32 / n as f32).min(1.0);
+                path.move_to(to_px(gd.a.0 + dx * t0, gd.a.1 + dy * t0));
+                path.line_to(to_px(gd.a.0 + dx * t1, gd.a.1 + dy * t1));
+            }
+        } else {
+            path.move_to(to_px(gd.a.0, gd.a.1));
+            path.line_to(to_px(gd.b.0, gd.b.1));
+        }
+    }
+    let _ = zoom;
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
     }
 }

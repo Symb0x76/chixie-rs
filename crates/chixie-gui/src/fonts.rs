@@ -57,6 +57,10 @@ impl FontsView {
         cx.notify();
     }
 
+    pub fn collected(&self) -> &[FontInfo] {
+        &self.collected
+    }
+
     pub fn name_of(&self, id: i64) -> Option<String> {
         self.collected.iter().chain(&self.online).find(|f| f.id == id).map(|f| f.font_name.clone())
     }
