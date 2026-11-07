@@ -333,7 +333,7 @@ impl Actor {
         }
         // Park: pen up, back to the work origin, so the next sheet can go in.
         let last = pages.saturating_sub(1);
-        if let Err(e) = self.cmd(&self.pen_line(Pen::Up)).and_then(|()| self.cmd("G90G0 X0Y0")) {
+        if let Err(e) = self.park() {
             return self.fail(e, Some(last), None);
         }
         self.emit(Event::JobEnded { outcome: JobOutcome::Done, page: last, line: 0 });
@@ -357,13 +357,22 @@ impl Actor {
         }
     }
 
+    /// Pen up, then rapid back to the work origin.
+    fn park(&mut self) -> Result<()> {
+        self.cmd(&self.pen_line(Pen::Up))?;
+        self.cmd("G90G0 X0Y0")
+    }
+
     /// Stop = feed hold (already sent by `stream`) → wait for the hold to settle → soft reset
-    /// (flushes the planner without losing position) → unlock → pen up.
+    /// (flushes the planner without losing position) → unlock → pen up → back to origin.
+    /// If the hold never settled, a reset mid-motion may have lost position, so the head stays put
+    /// (pen up) rather than rapid to a wrong origin.
     fn end_stopped(&mut self, page: usize, line: usize) {
         let r = (|| -> Result<()> {
             let link = self.link_mut();
             link.write_all(&[realtime::FEED_HOLD])?;
             let deadline = Instant::now() + Duration::from_secs(5);
+            let mut settled = false;
             'settle: while Instant::now() < deadline {
                 link.write_all(&[realtime::STATUS])?;
                 let poll_until = Instant::now() + Duration::from_millis(200);
@@ -373,6 +382,7 @@ impl Actor {
                             if let Some(st) = GrblStatus::parse(&l)
                                 && (st.state.starts_with("Hold:0") || st.state == "Idle")
                             {
+                                settled = true;
                                 break 'settle;
                             }
                         }
@@ -390,7 +400,7 @@ impl Actor {
             }
             self.ctl.reset();
             let _ = self.cmd("$X"); // best effort; only needed if the reset raised an alarm
-            self.cmd(&self.pen_line(Pen::Up))
+            if settled { self.park() } else { self.cmd(&self.pen_line(Pen::Up)) }
         })();
         if let Err(e) = r {
             return self.fail(e, Some(page), Some(line));
@@ -508,7 +518,8 @@ mod tests {
         assert_eq!(end, Event::JobEnded { outcome: JobOutcome::Stopped, page: 1, line: 0 });
         let f = fake.lock().unwrap();
         assert!(f.realtime.contains(&realtime::FEED_HOLD) && f.realtime.contains(&realtime::SOFT_RESET));
-        assert_eq!(f.lines.last().map(String::as_str), Some("G1G90 Z0 F8000"));
+        // Hold settled (Hold:0), so after the reset the pen lifts and the head parks at the origin.
+        assert_eq!(&f.lines[f.lines.len() - 2..], ["G1G90 Z0 F8000", "G90G0 X0Y0"]);
         drop(f);
         h.send(Command::Shutdown);
     }
