@@ -12,7 +12,9 @@ mod app;
 mod fake;
 mod fonts;
 mod login;
+mod preview;
 mod state;
+mod write;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -63,18 +65,19 @@ fn main() {
             titlebar: Some(TitlebarOptions { title: Some("赤写 ChiXie".into()), ..Default::default() }),
             ..Default::default()
         };
-        let (_handle, app) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| ChiXieApp::new(events, window, cx)))
+        let (handle, app) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| ChiXieApp::new(events, window, cx)))
             .expect("open window");
         cx.activate(true);
 
         if autotest {
-            run_autotest(app, cx);
+            run_autotest(handle, app, cx);
         }
     });
 }
 
 /// Scripted smoke run against the fake backend; prints one result line, then quits.
-fn run_autotest(app: Entity<ChiXieApp>, cx: &mut App) {
+/// Login → load font → write a long text (wraps onto 2 pages, one missing glyph) → export.
+fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let pause = |ms| Duration::from_millis(ms);
         cx.background_executor().timer(pause(400)).await;
@@ -87,15 +90,35 @@ fn run_autotest(app: Entity<ChiXieApp>, cx: &mut App) {
             a.fonts.update(cx, |f, cx| f.use_font(1, cx));
         });
         cx.background_executor().timer(pause(1500)).await;
+        // The fixture font has 你 好 A . ; 写 is deliberately missing.
+        let text = format!("你好 A.写\n{}", "你好".repeat(400));
+        let _ = cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |a, cx| {
+                a.set_page(Page::Write, cx);
+                a.write.update(cx, |w, cx| w.set_text(&text, window, cx));
+            });
+        });
+        cx.background_executor().timer(pause(1500)).await;
         cx.update(|cx| {
             let st = cx.global::<AppState>();
+            let doc = app.read(cx).write.read(cx).document();
+            let export = std::env::temp_dir().join("chixie-autotest.gcode");
+            let files = doc
+                .as_ref()
+                .map(|d| write::export_files(d, &st.settings.device.profile, &export).map(|f| f.len()).unwrap_or(0))
+                .unwrap_or(0);
             println!(
-                "AUTOTEST user={:?} active_font={:?} glyphs={} account_saved={:?} font_id_saved={:?}",
+                "AUTOTEST user={:?} active_font={:?} glyphs={} account_saved={:?} font_id_saved={:?} pages={} strokes={} missing={:?} bounds={:?} exported_files={}",
                 st.user.as_ref().map(|u| u.name.clone()),
                 st.active_font.as_ref().map(|f| f.name.clone()),
                 st.active_font.as_ref().map(|f| f.font.glyphs.len()).unwrap_or(0),
                 st.settings.account,
                 st.settings.page.font_id,
+                doc.as_ref().map(|d| d.pages.len()).unwrap_or(0),
+                doc.as_ref().map(|d| d.stroke_count()).unwrap_or(0),
+                doc.as_ref().map(|d| d.missing.clone()).unwrap_or_default(),
+                doc.as_ref().and_then(|d| d.bounds()),
+                files,
             );
         });
         cx.background_executor().timer(pause(600)).await; // leave a frame for a screenshot

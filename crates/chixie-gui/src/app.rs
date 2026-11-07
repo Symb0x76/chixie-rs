@@ -9,6 +9,7 @@ use gpui_kit::component::{ActiveTheme as _, IconName, StyledExt as _, Theme, The
 use gpui_kit::*;
 
 use crate::fonts::FontsView;
+use crate::write::WriteView;
 use crate::login::LoginView;
 use crate::state::{ActiveFont, AppState, User};
 
@@ -31,6 +32,7 @@ pub struct ChiXieApp {
     page: Page,
     pub login: Entity<LoginView>,
     pub fonts: Entity<FontsView>,
+    pub write: Entity<WriteView>,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -39,6 +41,7 @@ impl ChiXieApp {
     pub fn new(events: async_channel::Receiver<Event>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let login = cx.new(|cx| LoginView::new(window, cx));
         let fonts = cx.new(|cx| FontsView::new(window, cx));
+        let write = cx.new(|cx| WriteView::new(window, cx));
         let pump = cx.spawn_in(window, async move |this, cx| {
             while let Ok(ev) = events.recv().await {
                 if this.update_in(cx, |app, window, cx| app.on_session_event(ev, window, cx)).is_err() {
@@ -47,7 +50,7 @@ impl ChiXieApp {
             }
         });
         let obs = cx.observe_global::<AppState>(|_, cx| cx.notify());
-        Self { page: Page::Write, login, fonts, _tasks: vec![pump], _subs: vec![obs] }
+        Self { page: Page::Write, login, fonts, write, _tasks: vec![pump], _subs: vec![obs] }
     }
 
     pub fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -139,15 +142,7 @@ impl ChiXieApp {
         let muted = theme.muted_foreground;
         match self.page {
             Page::Fonts => self.fonts.clone().into_any_element(),
-            Page::Write => {
-                let font = cx.global::<AppState>().active_font.as_ref().map(|f| f.name.clone());
-                placeholder(
-                    "书写",
-                    font.map(|n| format!("当前字体：{n}。文本编辑与预览将在下一阶段（M4）加入。"))
-                        .unwrap_or_else(|| "请先在「字体」中选择一个字体。".into()),
-                    muted,
-                )
-            }
+            Page::Write => self.write.clone().into_any_element(),
             Page::Device => placeholder("设备", "连接、点动、下笔测试与书写任务将在 M5 加入。".into(), muted),
             Page::Settings => {
                 let dark = cx.theme().mode == ThemeMode::Dark;
