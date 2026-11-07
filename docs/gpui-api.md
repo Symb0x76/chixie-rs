@@ -177,3 +177,35 @@ div().bg(cx.theme().background).text_color(cx.theme().foreground).border_1().bor
 - Nothing compiled; signatures quoted from source. `.medium()/.large()` on Sizable and the exact IconName variant spellings beyond those used in-source (e.g. `Settings`, `Loader`, `PanelLeftOpen`, `Check`, `Search`, `Plus`) were derived from file names/`sizing.rs` pattern, not each grepped.
 - Table/List/VirtualList component signatures not inspected.
 - `Sidebar` renders via a virtual `list` and needs a bounded height (`h_full` inside a sized parent).
+
+## 11. Ribbon widgets (verified 2026-11-07 against gpui-component 0.9.0 source; used in app/ribbon_tabs.rs)
+- **Icons:**
+  - `Icon::new(icon).with_size(px(26.))` (Sizable) or `.size_8()` (Styled); colour with `.text_color`.
+  - Two enums exist:
+    - `component::IconName`: the default ~100-icon bundle;
+    - `assets::IconName`: all 1830 Lucide icons, which render blank unless embedded.
+  - We embed the extras with `gpui_kit::assets::icon_assets!(pub RibbonIcons, [Save, ...])` and an
+    `AssetSource` that tries them before `assets::Assets` (`src/icons.rs`).
+  - Unknown names fail to compile; check `target/debug/build/gpui-kit-assets-*/out/icon_name.rs`.
+- **Menus** (`component::menu::{DropdownMenu as _, PopupMenuItem}`):
+  - `Button::new(id).dropdown_menu(|m, _w, _cx| m.item(PopupMenuItem::new(label).checked(b).icon(i).on_click(|_, w, cx| ..)).separator())`.
+  - The closure's cx is the menu's, so capture `cx.entity().downgrade()` to reach your view.
+- **Select:**
+  - `SelectState::new(Vec<String>, Option<IndexPath>, window, cx)`, with `set_items` and
+    `set_selected_index`.
+  - Event: `SelectEvent<Vec<String>>::Confirm(Option<String>)`.
+  - Element: `Select::new(&state).small().placeholder(..).menu_width(..)`.
+- **NumberInput:**
+  - `NumberInput::new(&input_state).small().suffix("mm")`, where the state is built with
+    `InputState::new(..).step(x).min(a).max(b)`.
+  - Stepping is internal and emits `InputEvent::Change`.
+- **Switch:** `Switch::new(id).small().label(..).checked(b).on_click(|v: &bool, w, cx| ..)`. It is
+  controlled: you store the value yourself.
+- **Theme accent:**
+  - `Theme::global_mut(cx)` is mutable after `Theme::change`.
+  - `Button::primary` paints from `theme.tokens.button_primary*` (`ThemeToken`, from `Hsla.into()`),
+    so set those **and** `primary*` / `button_primary*` (see `ribbon::set_theme`).
+- A `Button` can take custom children (`.child(v_flex()..)`) and styles (`.h(px(68.))`). This is how
+  the large icon-over-label ribbon buttons are built.
+- **Debug-build stack:** a single function building every ribbon tab overflowed the 1 MB main stack.
+  Keep one `#[inline(never)]` fn per tab or panel.

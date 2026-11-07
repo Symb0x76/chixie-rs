@@ -42,5 +42,23 @@
   2-page job incl. sheet change → Done.
 - VERIFY on hardware (BOSS): connect COM4 via 自动, jog/pen, full job, pause (head stops),
   stop (pen lifts), USB unplug mid-job → toast + reconnect via 自动.
-- Next: M6 (settings persistence polish, i18n, window geometry, icon, release build).
+- After hardware test (2026-11-07), BOSS asked for three things; all are done:
+  - The pen parks at X0 Y0 after a finished job (`device.rs` run_job).
+  - Page templates:
+    - `template.rs`: blank / ruled (fixed or random rows, dual line, columns) / grid (作文格);
+    - `layout::Ruling` + per-page guides, which are never plotted;
+    - `templates.toml`;
+    - ChiXie3 `.cx` pickle import (`chixie3_templates.rs`).
+    - Formats and VERIFY items are in docs/protocol.md.
+  - Word-style shell:
+    - quick access toolbar, filled 文件 tab → Backstage (新建 from template, 打开, 保存, 另存为, 导出,
+      模板管理, 账户, 选项);
+    - ribbon with large and small buttons, captions and a ↘ launcher (手写效果 ranges dialog);
+    - 布局 tab with paper / orientation / margin menus and a template gallery;
+    - font `Select`;
+    - Word-blue accent (`ribbon::set_theme`).
+  - AUTOTEST covers both templates and the backstage. Screenshots are in the scratchpad (t3-*.png).
+- VERIFY with a ChiXie3 template capture: glyph placement in ruled rows, random-row semantics,
+  dual-line use, grid glyph scaling.
+- Next: M6 (i18n, window geometry, app icon, release build), then template capture.
 

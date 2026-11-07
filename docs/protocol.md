@@ -191,3 +191,31 @@ Captures: `captures/{a2_pasted_deform_off,d_base_deform,d_shape_deform7}.gcode` 
   consistent with `space_width_zh`; **VERIFY**.
 - The paste-vs-typed scale anomaly above did not reproduce here, where all sx = sy = 1.000. Treat it
   as an artifact of that one paste.
+
+## Page templates (`%USERPROFILE%\ChiXie3\conf\*.cx`, decoded 2026-11-07)
+Python pickles (protocol 4) of `{name: object}`; the objects come from `core.DataModel.*` and carry
+their state as a plain `__dict__`. They are read by `chixie_core::chixie3_templates`, a small pickle
+reader that never executes class references.
+- `note_template.cx` holds `NoteTemplate` objects, which become ruled templates:
+  - `page_width`, `page_height` and `margin_top/bottom/left/right`, all in mm (whole mm stored as int);
+  - `min_row_num` / `max_row_num`: a fixed row count when equal, otherwise 随机行数;
+  - `enable_dual_line_mode` + `up_row_height` (mm);
+  - `enable_dashed_line_partition`;
+  - `column_num`, `column_width[]`, `column_space[]`, `column_width_equal`, `show_dividing_line`,
+    `column_same_type`. Only equal columns are mapped, with the gap taken from `column_space[0]`.
+- `composition_template.cx` holds `CompositionTemplate` objects, which become grid templates:
+  - `page_width`, `page_height`;
+  - `cell_row_number`, `cell_column_number`;
+  - `left_margin`, `top_margin`;
+  - `cell_width`, `cell_height`;
+  - `row_spacing`, `column_spacing` (mm).
+- How our layout uses them. Each point below is a **VERIFY** best guess until a template capture:
+  - The row pitch is the writable height ÷ rows.
+  - Glyphs sit on the rule: their top is the row top + band + 0.7 × the slack, with the nominal glyph
+    height `EM_UNITS` = 7 font units.
+  - A random row count is drawn once per page.
+  - Columns fill top to bottom, then left to right.
+  - Dual-line mode keeps the text below the upper band.
+  - Grid templates place one character per cell, centred at the font size (not scaled to the cell).
+    Spaces and punctuation take a cell.
+  - Ruling is never plotted, because the paper is pre-printed.
