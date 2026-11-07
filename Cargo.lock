@@ -938,6 +938,8 @@ dependencies = [
  "env_logger",
  "gpui-kit",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

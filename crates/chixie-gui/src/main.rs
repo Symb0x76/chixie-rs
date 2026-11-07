@@ -3,28 +3,30 @@
 //! Environment switches:
 //! - `CHIXIE_GUI_FAKE=1`: offline demo backend (any account, password `demo`), settings in a temp
 //!   dir so the real settings file and credential store are untouched.
-//! - `CHIXIE_GUI_AUTOTEST=1` (implies FAKE): log in, open Fonts, load a font, print one
-//!   `AUTOTEST ...` line and quit. Used to verify the UI without input injection.
+//! - `CHIXIE_GUI_AUTOTEST=1` (implies FAKE): log in, load a font, type and edit on the page through
+//!   the IME input handler and editor actions, export, print one `AUTOTEST ...` line and quit.
+//!   Used to verify the UI without input injection.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod doc_view;
 mod fake;
+mod file_ops;
 mod fonts;
 mod login;
-mod preview;
 mod state;
-mod write;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use chixie_core::config::Settings;
+use chixie_core::editor::EditDoc;
 use chixie_core::session::{self, HEARTBEAT_EVERY};
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 
-use crate::app::{ChiXieApp, Page};
+use crate::app::ChiXieApp;
 use crate::state::AppState;
 
 fn flag(name: &str) -> bool {
@@ -55,6 +57,7 @@ fn main() {
 
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
+        doc_view::bind_keys(cx);
         if settings.ui.dark {
             Theme::change(ThemeMode::Dark, None, cx);
         }
@@ -76,7 +79,8 @@ fn main() {
 }
 
 /// Scripted smoke run against the fake backend; prints one result line, then quits.
-/// Login → load font → write a long text (wraps onto 2 pages, one missing glyph) → export.
+/// Login → load font → type through the IME input handler (wraps onto 2 pages, one missing
+/// glyph) → caret moves, selection, delete, undo via dispatched actions → export.
 fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let pause = |ms| Duration::from_millis(ms);
@@ -85,44 +89,70 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
             a.login.update(cx, |l, cx| l.submit_values("13800000000".into(), "demo".into(), false, cx));
         });
         cx.background_executor().timer(pause(1200)).await;
-        app.update(cx, |a, cx| {
-            a.set_page(Page::Fonts, cx);
-            a.fonts.update(cx, |f, cx| f.use_font(1, cx));
-        });
+        app.update(cx, |a, cx| a.fonts.update(cx, |f, cx| f.use_font(1, cx)));
         cx.background_executor().timer(pause(1500)).await;
         // The fixture font has 你 好 A . ; 写 is deliberately missing.
-        let text = format!("你好 A.写\n{}", "你好".repeat(400));
+        let mut steps = Vec::new();
         let _ = cx.update_window(handle, |_, window, cx| {
-            app.update(cx, |a, cx| {
-                a.set_page(Page::Write, cx);
-                a.write.update(cx, |w, cx| w.set_text(&text, window, cx));
+            let doc = app.read(cx).doc.clone();
+            doc.update(cx, |d, cx| {
+                d.focus(window, cx);
+                d.replace_doc(EditDoc::from_text(""), cx);
+                // Pinyin composition, then commit (what Microsoft Pinyin does).
+                d.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+                d.replace_and_mark_text_in_range(None, "你", Some(1..1), window, cx);
+                d.replace_text_in_range(None, "你", window, cx);
+                d.replace_text_in_range(None, &format!("好 A.写\n{}", "你好".repeat(400)), window, cx);
+                steps.push(format!("typed={}", d.doc().len()));
             });
         });
-        cx.background_executor().timer(pause(1500)).await;
+        // Editor actions through the real dispatch path (same as key bindings). Dispatch is
+        // deferred to the next effect cycle and routed via the focused node of the rendered
+        // frame, so wait a frame before dispatching and before reading the result.
+        let head = |cx: &mut App| app.read(cx).doc.read(cx).doc().chars().iter().take(4).collect::<String>();
+        let dispatch = |cx: &mut AsyncApp, actions: Vec<Box<dyn Action>>| {
+            let _ = cx.update_window(handle, |_, window, cx| {
+                for a in actions {
+                    window.dispatch_action(a, cx);
+                }
+            });
+        };
+        cx.background_executor().timer(pause(300)).await;
+        dispatch(
+            cx,
+            vec![Box::new(doc_view::DocStart), Box::new(doc_view::SelectRight), Box::new(doc_view::SelectRight), Box::new(doc_view::Delete)],
+        );
+        cx.background_executor().timer(pause(300)).await;
+        steps.push(format!("after_delete={:?}", cx.update(head)));
+        dispatch(cx, vec![Box::new(doc_view::Undo)]);
+        cx.background_executor().timer(pause(300)).await;
+        steps.push(format!("after_undo={:?}", cx.update(head)));
+        dispatch(cx, vec![Box::new(doc_view::DocEnd)]);
+        cx.background_executor().timer(pause(800)).await;
         cx.update(|cx| {
             let st = cx.global::<AppState>();
-            let doc = app.read(cx).write.read(cx).document();
+            let d = app.read(cx).doc.read(cx);
+            let doc = d.document();
             let export = std::env::temp_dir().join("chixie-autotest.gcode");
-            let files = doc
-                .as_ref()
-                .map(|d| write::export_files(d, &st.settings.device.profile, &export).map(|f| f.len()).unwrap_or(0))
-                .unwrap_or(0);
+            let files = file_ops::export_files(&doc, &st.settings.device.profile, &export).map(|f| f.len()).unwrap_or(0);
             println!(
-                "AUTOTEST user={:?} active_font={:?} glyphs={} account_saved={:?} font_id_saved={:?} pages={} strokes={} missing={:?} bounds={:?} exported_files={}",
+                "AUTOTEST user={:?} active_font={:?} {} chars={} caret={} caret_page={} pages={} strokes={} missing={:?} bounds={:?} exported_files={}",
                 st.user.as_ref().map(|u| u.name.clone()),
                 st.active_font.as_ref().map(|f| f.name.clone()),
-                st.active_font.as_ref().map(|f| f.font.glyphs.len()).unwrap_or(0),
-                st.settings.account,
-                st.settings.page.font_id,
-                doc.as_ref().map(|d| d.pages.len()).unwrap_or(0),
-                doc.as_ref().map(|d| d.stroke_count()).unwrap_or(0),
-                doc.as_ref().map(|d| d.missing.clone()).unwrap_or_default(),
-                doc.as_ref().and_then(|d| d.bounds()),
+                steps.join(" "),
+                d.doc().len(),
+                d.doc().caret(),
+                d.caret_page(),
+                doc.pages.len(),
+                doc.stroke_count(),
+                doc.missing,
+                doc.bounds(),
                 files,
             );
         });
-        cx.background_executor().timer(pause(600)).await; // leave a frame for a screenshot
+        cx.background_executor().timer(pause(3000)).await; // leave time for a screenshot
         cx.update(|cx| cx.quit());
     })
     .detach();
 }
+
