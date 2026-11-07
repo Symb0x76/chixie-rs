@@ -14,6 +14,7 @@ pub mod gcode;
 pub mod grbl;
 pub mod handwriting;
 pub mod layout;
+pub mod session;
 pub mod transport;
 
 #[derive(Debug, thiserror::Error)]
