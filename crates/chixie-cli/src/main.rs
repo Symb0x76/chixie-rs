@@ -45,6 +45,13 @@ enum Cmd {
         #[command(subcommand)]
         op: SdOp,
     },
+    /// Download one font and report why decryption fails, without printing secrets. Logs in with
+    /// the GUI's saved account and the password from the Windows credential store ("remember
+    /// password" in the GUI), or CHIXIE_ACCOUNT / CHIXIE_PASSWORD.
+    FontCheck {
+        #[arg(long)]
+        font_id: i64,
+    },
     /// List fonts (login via CHIXIE_ACCOUNT / CHIXIE_PASSWORD env)
     Fonts {
         /// Browse the full online catalog instead of just your collected fonts
@@ -205,6 +212,27 @@ fn main() -> chixie_core::Result<()> {
                 SdOp::Status => b.status()?,
             };
             println!("{out}");
+        }
+        Cmd::FontCheck { font_id } => {
+            let settings = chixie_core::config::Settings::default_path()
+                .and_then(|p| chixie_core::config::Settings::load(&p))
+                .unwrap_or_default();
+            let account = std::env::var("CHIXIE_ACCOUNT").ok().or(settings.account).ok_or_else(|| {
+                chixie_core::Error::Api("no saved account: log in once in the GUI, or set CHIXIE_ACCOUNT".into())
+            })?;
+            let password = match std::env::var("CHIXIE_PASSWORD") {
+                Ok(p) => p,
+                Err(_) => chixie_core::credentials::load(&account)?.ok_or_else(|| {
+                    chixie_core::Error::Api("no saved password: tick 记住密码 in the GUI, or set CHIXIE_PASSWORD".into())
+                })?,
+            };
+            let mut c = api::Client::new()?;
+            let l = c.login(&account, &password)?;
+            eprintln!("logged in as {} ({})", l.username, l.role_code);
+            match c.font(font_id) {
+                Ok(f) => println!("font {font_id}: OK, {} glyphs", f.glyphs.len()),
+                Err(e) => println!("font {font_id}: {e}"),
+            }
         }
         Cmd::Fonts { online, page, search } => {
             let c = api_login()?;

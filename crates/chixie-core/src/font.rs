@@ -68,6 +68,31 @@ pub fn fernet_decrypt(token: &str, key: &str) -> Result<Vec<u8>> {
     Ok(pt.to_vec())
 }
 
+/// Non-secret description of a key token and font blob for decrypt-failure reports: lengths,
+/// where `=` sits, and which characters fall outside the urlsafe-base64 alphabet. Never the
+/// characters themselves.
+pub fn shape(backup_token: &str, blob: &str) -> String {
+    let eq = |s: &str| s.char_indices().filter(|(_, c)| *c == '=').map(|(i, _)| i).collect::<Vec<_>>();
+    let odd = |s: &str| {
+        let mut v: Vec<char> = s.chars().filter(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '='))).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.into_iter().map(|c| format!("{:?}", c)).collect::<Vec<_>>().join(" ")
+    };
+    let tail_eq: Vec<usize> = eq(blob).into_iter().filter(|i| *i + 8 >= blob.len()).map(|i| blob.len() - i).collect();
+    format!(
+        "backup_token: {} chars, '=' at {:?}, non-b64 [{}]; blob: {} chars (mod 4 = {}), starts {:?}, '=' from end {:?}, non-b64 [{}]",
+        backup_token.chars().count(),
+        eq(backup_token),
+        odd(backup_token),
+        blob.len(),
+        blob.len() % 4,
+        blob.get(..4).unwrap_or(""),
+        tail_eq,
+        odd(blob),
+    )
+}
+
 /// One point in glyph units (y downward).
 pub type Point = (f32, f32);
 
@@ -123,15 +148,17 @@ impl Font {
 
     /// Decrypt by trying each key candidate derived from the backup_token.
     pub fn from_encrypted_with_backup_token(blob: &str, backup_token: &str) -> Result<Self> {
-        let mut tried = 0;
-        for key in Self::key_candidates(backup_token) {
-            tried += 1;
-            if let Ok(plain) = fernet_decrypt(blob, &key) {
-                log::debug!("font decrypt ok with key candidate {tried}");
-                return Self::from_json(&plain);
+        let mut why = Vec::new();
+        for (i, key) in Self::key_candidates(backup_token).into_iter().enumerate() {
+            match fernet_decrypt(blob, &key) {
+                Ok(plain) => {
+                    log::debug!("font decrypt ok with key candidate {}", i + 1);
+                    return Self::from_json(&plain);
+                }
+                Err(e) => why.push(format!("#{}: {e}", i + 1)),
             }
         }
-        Err(Error::Font(format!("fernet decrypt failed ({tried} key candidates tried)")))
+        Err(Error::Font(format!("fernet decrypt failed [{}]; {}", why.join("; "), shape(backup_token, blob))))
     }
 
     /// The glyph map in the same JSON shape `from_json` reads (`{"字": [advance, [xs…], [ys…]]}`,
