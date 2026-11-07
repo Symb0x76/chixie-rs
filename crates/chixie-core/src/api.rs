@@ -93,6 +93,26 @@ impl Client {
         Ok(self.login.as_ref().unwrap())
     }
 
+    pub fn is_logged_in(&self) -> bool {
+        self.login.is_some()
+    }
+
+    /// Keep-alive; ChiXie3 calls this periodically (`HeartbeatInterval`). Verified by capture:
+    /// request `{}`, response `data: "ok"`.
+    pub fn heartbeat(&self) -> Result<()> {
+        let _: serde_json::Value = self.post("user/heartbeat", &serde_json::json!({}))?;
+        Ok(())
+    }
+
+    /// End the session server-side, then forget the tokens locally (even if the call fails,
+    /// so a dead session never lingers). The request body was not captured; `{}` is a best guess.
+    /// VERIFY.
+    pub fn logout(&mut self) -> Result<()> {
+        let r = self.post::<_, serde_json::Value>("user/logout", &serde_json::json!({})).map(|_| ());
+        self.login = None;
+        r
+    }
+
     pub fn collected_fonts(&self, page_num: i64) -> Result<Vec<FontInfo>> {
         self.post("font/get_collected_fonts", &serde_json::json!({ "page_num": page_num }))
     }
