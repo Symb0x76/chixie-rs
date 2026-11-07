@@ -180,8 +180,17 @@ impl ChiXieApp {
     #[inline(never)]
     fn bs_account(&self, cx: &mut Context<Self>) -> AnyElement {
         let st = cx.global::<AppState>();
-        let user = st.user.as_ref().map(|u| format!("{}（{}）", u.name, u.role)).unwrap_or_default();
         let font = st.active_font.as_ref().map(|f| f.name.clone()).unwrap_or_else(|| "未选择".into());
+        let Some(user) = st.user.as_ref().map(|u| format!("{}（{}）", u.name, u.role)) else {
+            // Logged out: the login form. Only needed to download fonts.
+            return v_flex()
+                .gap_3()
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!(
+                    "当前字体：{font}。无需登录也能使用全部功能；登录只用于下载云端字体，下载后的字体保存在本机。"
+                )))
+                .child(div().h(px(420.)).w(px(480.)).child(self.login.clone()))
+                .into_any_element();
+        };
         v_flex()
             .gap_3()
             .child(h_flex().gap_3().child(Icon::new(IconName::User).with_size(px(40.))).child(div().text_lg().child(user)))

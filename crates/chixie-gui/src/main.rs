@@ -79,7 +79,8 @@ fn main() {
             log::warn!("{e}; using built-in templates");
             TemplateStore::builtins()
         });
-        cx.set_global(AppState { settings, settings_path, session, user: None, active_font: None, templates, templates_path });
+        let fonts = std::sync::Arc::new(chixie_core::font_store::FontStore::next_to(&settings_path));
+        cx.set_global(AppState { settings, settings_path, session, user: None, active_font: None, templates, templates_path, fonts });
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
@@ -103,12 +104,41 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let pause = |ms| Duration::from_millis(ms);
         cx.background_executor().timer(pause(400)).await;
+        // No login gate: the editor is up before anyone logs in.
+        cx.update(|cx| {
+            let st = cx.global::<AppState>();
+            println!(
+                "AUTOTEST_START logged_in={} editor_up={} local_fonts={} active_font={:?}",
+                st.user.is_some(),
+                app.read(cx).backstage.is_none(),
+                st.fonts.list().len(),
+                st.active_font.as_ref().map(|f| f.name.clone())
+            );
+        });
         app.update(cx, |a, cx| {
             a.login.update(cx, |l, cx| l.submit_values("13800000000".into(), "demo".into(), false, cx));
         });
         cx.background_executor().timer(pause(1200)).await;
         app.update(cx, |a, cx| a.fonts.update(cx, |f, cx| f.use_font(1, cx)));
         cx.background_executor().timer(pause(1500)).await;
+        // Downloading saved the font locally; log out, drop it from memory, reload from disk.
+        cx.update(|cx| cx.global::<AppState>().session.send(chixie_core::session::Command::Logout));
+        cx.background_executor().timer(pause(600)).await;
+        let _ = cx.update_window(handle, |_, window, cx| {
+            cx.global_mut::<AppState>().active_font = None;
+            app.update(cx, |a, cx| a.use_font_id(1, window, cx));
+        });
+        cx.background_executor().timer(pause(600)).await;
+        cx.update(|cx| {
+            let st = cx.global::<AppState>();
+            println!(
+                "AUTOTEST_OFFLINE logged_in={} saved={} active_font={:?} glyphs={}",
+                st.user.is_some(),
+                st.fonts.contains(1),
+                st.active_font.as_ref().map(|f| f.name.clone()),
+                st.active_font.as_ref().map(|f| f.font.glyphs.len()).unwrap_or(0)
+            );
+        });
         // The fixture font has 你 好 A . ; 写 is deliberately missing.
         let mut steps = Vec::new();
         let _ = cx.update_window(handle, |_, window, cx| {

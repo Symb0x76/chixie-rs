@@ -1,8 +1,10 @@
 //! Account session worker: one thread owns the backend client (blocking HTTP), so the UI never
 //! blocks. Same shape as `device.rs`: commands in over `mpsc`, events out over `async-channel`.
 //!
-//! Decrypted fonts are cached in memory only (they are tied to the session's backup token and
-//! must not be written to disk), shared as `Arc<Font>` so layout can use them on any thread.
+//! The worker caches decrypted fonts in memory for the session, shared as `Arc<Font>` so layout
+//! can use them on any thread. The GUI also keeps each downloaded font in the local
+//! `font_store` (decrypted glyph map on this computer, BOSS's decision 2026-11-07), so login is
+//! only needed to download.
 
 use std::collections::HashMap;
 use std::sync::Arc;

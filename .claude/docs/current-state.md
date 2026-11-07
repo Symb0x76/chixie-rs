@@ -61,5 +61,15 @@
 - Template capture done (2026-11-07): ruled-row placement fixed to match, grid already matched.
 - VERIFY still (not captured): random-row semantics,
   dual-line use, column fill order.
-- Next: M6 (i18n, window geometry, app icon, release build), then template capture.
+- Login is optional (2026-11-07):
+  - The app opens straight to the editor.
+  - Login is under 文件 › 账户 (or the 登录 button in the tab strip) and is only needed to
+    download fonts.
+  - Downloaded fonts are saved decrypted in `<config>/fonts/<id>.json` + `index.json`
+    (`font_store.rs`). 字体库 has a 本地字体 tab (使用 / 删除), and the font picker lists local
+    fonts plus collected fonts marked 云端.
+  - The last font reloads from disk at start. Logging out keeps the document and the local fonts.
+- Device: 参数设置 tab (profile, ChiXie3 import, $$ machine specs); Stop and Done both park at
+  X0 Y0.
+- Next: M6 (i18n, window geometry, app icon, release build).
 

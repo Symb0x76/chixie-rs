@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use chixie_core::config::Settings;
 use chixie_core::font::Font;
+use chixie_core::font_store::FontStore;
 use chixie_core::session::SessionHandle;
 use chixie_core::template::{Template, TemplateStore};
 use gpui_kit::Global;
@@ -30,6 +31,8 @@ pub struct AppState {
     pub user: Option<User>,
     pub active_font: Option<ActiveFont>,
     pub templates: TemplateStore,
+    /// Downloaded fonts kept on this computer (work without login).
+    pub fonts: std::sync::Arc<FontStore>,
     pub templates_path: PathBuf,
 }
 

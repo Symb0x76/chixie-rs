@@ -28,7 +28,7 @@ pub use backstage::Stage;
 use crate::device::{DevicePanel, Notice};
 use crate::doc_view::{self, DocView};
 use crate::file_ops;
-use crate::fonts::FontsView;
+use crate::fonts::{FontsEvent, FontsView};
 use crate::login::LoginView;
 use crate::ribbon::{self, RIBBON_H};
 use crate::state::{ActiveFont, AppState, User};
@@ -56,8 +56,9 @@ pub struct ChiXieApp {
     font_size: Entity<InputState>,
     line_height: Entity<InputState>,
     font_select: Entity<SelectState<Vec<String>>>,
-    /// Collected font ids, parallel to the font select's items.
+    /// Font ids and labels, parallel to the font select's items.
     font_ids: Vec<i64>,
+    font_names: Vec<String>,
     style_dialog: Entity<StyleDialog>,
     backstage_focus: FocusHandle,
     /// Where 保存 writes; `None` until 另存为 / 打开 of a `.chx`.
@@ -122,9 +123,17 @@ impl ChiXieApp {
                     this.edit_settings(cx, |st| st.settings.page.line_height = v);
                 }
             }),
-            cx.subscribe_in(&font_select, window, |this, _s, ev: &SelectEvent<Vec<String>>, _w, cx| {
+            cx.subscribe_in(&font_select, window, |this, _s, ev: &SelectEvent<Vec<String>>, window, cx| {
                 if let SelectEvent::Confirm(Some(name)) = ev {
-                    this.choose_font(name, cx);
+                    this.choose_font(name, window, cx);
+                }
+            }),
+            cx.subscribe_in(&fonts, window, |this, _v, ev: &FontsEvent, window, cx| match ev {
+                FontsEvent::UseLocal(id) => this.load_local_font(*id, window, cx),
+                FontsEvent::RemoveLocal(id) => this.remove_local_font(*id, window, cx),
+                FontsEvent::Login => {
+                    window.close_dialog(cx);
+                    this.open_backstage(Stage::Account, window, cx);
                 }
             }),
             cx.subscribe_in(&templates, window, |this, _v, ev: &TemplateEvent, window, cx| match ev {
@@ -134,6 +143,14 @@ impl ChiXieApp {
                 }
             }),
         ];
+        // No login needed: list downloaded fonts and reopen the last one from disk.
+        cx.defer_in(window, |this, window, cx| {
+            this.sync_font_select(window, cx);
+            let st = cx.global::<AppState>();
+            if let Some(id) = st.settings.page.font_id.filter(|id| st.fonts.contains(*id)) {
+                this.load_local_font(id, window, cx);
+            }
+        });
         Self {
             tab: 0,
             login,
@@ -148,6 +165,7 @@ impl ChiXieApp {
             line_height,
             font_select,
             font_ids: Vec::new(),
+            font_names: Vec::new(),
             style_dialog,
             backstage_focus: cx.focus_handle(),
             file: None,
@@ -162,26 +180,34 @@ impl ChiXieApp {
                 self.login.update(cx, |l, cx| l.on_logged_in(cx));
                 let st = cx.global_mut::<AppState>();
                 st.user = Some(User { name: username.clone(), role });
-                // Restore the last-used font (decrypted again; fonts are never cached on disk).
-                if let Some(id) = st.settings.page.font_id {
+                // The last-used font is normally already loaded from the local store; fetch it only
+                // if it was never downloaded.
+                if st.active_font.is_none()
+                    && let Some(id) = st.settings.page.font_id.filter(|id| !st.fonts.contains(*id))
+                {
                     st.session.send(Command::LoadFont { id });
                 }
                 st.session.send(Command::CollectedFonts);
                 window.push_notification(Notification::success(format!("欢迎，{username}")), cx);
-                self.focus_doc(window, cx);
+                if self.backstage == Some(Stage::Account) {
+                    self.close_backstage(window, cx);
+                } else {
+                    self.focus_doc(window, cx);
+                }
             }
             Event::LoginFailed(msg) => self.login.update(cx, |l, cx| l.on_failed(msg, cx)),
+            // Logging out only affects cloud access: the document and downloaded fonts stay.
             Event::LoggedOut => {
-                let st = cx.global_mut::<AppState>();
-                st.user = None;
-                st.active_font = None;
-                self.backstage = None;
+                cx.global_mut::<AppState>().user = None;
+                self.fonts.update(cx, |f, cx| f.clear_cloud(cx));
+                self.sync_font_select(window, cx);
+                window.push_notification(Notification::info("已退出登录；本地字体仍可使用"), cx);
             }
             Event::SessionLost(msg) => {
-                let st = cx.global_mut::<AppState>();
-                st.user = None;
-                st.active_font = None;
-                window.push_notification(Notification::warning(format!("登录已失效，请重新登录（{msg}）")), cx);
+                cx.global_mut::<AppState>().user = None;
+                self.fonts.update(cx, |f, cx| f.clear_cloud(cx));
+                self.sync_font_select(window, cx);
+                window.push_notification(Notification::warning(format!("登录已失效（{msg}）；本地字体仍可使用")), cx);
             }
             Event::Fonts { kind, page, fonts } => {
                 let collected = kind == FontListKind::Collected;
@@ -194,6 +220,16 @@ impl ChiXieApp {
                 let name = self.fonts.read(cx).name_of(id).unwrap_or_else(|| format!("字体 #{id}"));
                 self.fonts.update(cx, |f, cx| f.font_loaded(cx));
                 let glyphs = font.glyphs.len();
+                // Keep a copy on this computer so the font works without logging in next time.
+                let store = cx.global::<AppState>().fonts.clone();
+                let (to_save, save_name) = (font.clone(), name.clone());
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Err(e) = store.save(id, &save_name, &to_save) {
+                            log::warn!("saving font {id} locally: {e}");
+                        }
+                    })
+                    .detach();
                 let st = cx.global_mut::<AppState>();
                 st.active_font = Some(ActiveFont { id, name: name.clone(), font });
                 st.settings.page.font_id = Some(id);
@@ -213,12 +249,19 @@ impl ChiXieApp {
         cx.notify();
     }
 
-    /// Font picker items = collected fonts; selection = the active font.
+    /// Font picker items = downloaded fonts, then collected fonts not yet downloaded (marked
+    /// 云端, login needed); selection = the active font.
     fn sync_font_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let list: Vec<(i64, String)> = self.fonts.read(cx).collected().iter().map(|f| (f.id, f.font_name.clone())).collect();
+        let mut list: Vec<(i64, String)> = cx.global::<AppState>().fonts.list().into_iter().map(|f| (f.id, f.name)).collect();
+        for f in self.fonts.read(cx).collected() {
+            if !list.iter().any(|(id, _)| *id == f.id) {
+                list.push((f.id, format!("{}（云端）", f.font_name)));
+            }
+        }
         let active = cx.global::<AppState>().active_font.as_ref().map(|f| f.id);
         self.font_ids = list.iter().map(|(id, _)| *id).collect();
         let names: Vec<String> = list.into_iter().map(|(_, n)| n).collect();
+        self.font_names = names.clone();
         let selected = active.and_then(|id| self.font_ids.iter().position(|&x| x == id)).map(IndexPath::new);
         self.font_select.update(cx, |s, cx| {
             s.set_items(names, window, cx);
@@ -226,14 +269,58 @@ impl ChiXieApp {
         });
     }
 
-    fn choose_font(&mut self, name: &str, cx: &mut Context<Self>) {
-        let ids = self.font_ids.clone();
-        let names: Vec<String> = self.fonts.read(cx).collected().iter().map(|f| f.font_name.clone()).collect();
-        if let Some(id) = names.iter().position(|n| n == name).and_then(|i| ids.get(i).copied())
-            && cx.global::<AppState>().active_font.as_ref().map(|f| f.id) != Some(id)
-        {
-            self.fonts.update(cx, |f, cx| f.use_font(id, cx));
+    fn choose_font(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.font_names.iter().position(|n| n == name).and_then(|i| self.font_ids.get(i).copied()) else { return };
+        if cx.global::<AppState>().active_font.as_ref().map(|f| f.id) != Some(id) {
+            self.use_font_id(id, window, cx);
         }
+    }
+
+    /// Use font `id`: from the local store if downloaded, else download it (login needed).
+    pub fn use_font_id(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if cx.global::<AppState>().fonts.contains(id) {
+            self.load_local_font(id, window, cx);
+        } else if cx.global::<AppState>().user.is_some() {
+            self.fonts.update(cx, |f, cx| f.use_font(id, cx));
+        } else {
+            window.push_notification(Notification::info("这个字体还没下载，请先登录"), cx);
+            self.open_backstage(Stage::Account, window, cx);
+        }
+    }
+
+    /// Load a downloaded font from disk (no login, no network).
+    pub fn load_local_font(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let store = cx.global::<AppState>().fonts.clone();
+        let task = cx.background_executor().spawn(async move {
+            let name = store.name_of(id).unwrap_or_else(|| format!("字体 #{id}"));
+            store.load(id).map(|f| (name, f))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            let _ = this.update_in(cx, |app, window, cx| match res {
+                Ok((name, font)) => {
+                    let st = cx.global_mut::<AppState>();
+                    st.active_font = Some(ActiveFont { id, name, font: std::sync::Arc::new(font) });
+                    st.settings.page.font_id = Some(id);
+                    st.save_settings();
+                    if window.has_active_dialog(cx) {
+                        window.close_dialog(cx);
+                    }
+                    app.sync_font_select(window, cx);
+                    cx.notify();
+                }
+                Err(e) => window.push_notification(Notification::error(format!("读取本地字体失败：{e}")), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn remove_local_font(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(e) = cx.global::<AppState>().fonts.remove(id) {
+            window.push_notification(Notification::error(format!("删除失败：{e}")), cx);
+        }
+        self.sync_font_select(window, cx);
+        self.fonts.update(cx, |_, cx| cx.notify());
     }
 
     pub fn focus_doc(&self, window: &mut Window, cx: &mut App) {
@@ -507,6 +594,7 @@ impl ChiXieApp {
         let theme = cx.theme();
         let (border, muted) = (theme.border, theme.muted_foreground);
         let user = cx.global::<AppState>().user.as_ref().map(|u| u.name.clone()).unwrap_or_default();
+        let logged_in = cx.global::<AppState>().user.is_some();
         let act = |a: Box<dyn Action>| ribbon_tabs::editor_action(self.doc.clone(), a);
         h_flex()
             .h(px(36.))
@@ -532,7 +620,17 @@ impl ChiXieApp {
                 }))
             }))
             .child(div().flex_1())
-            .child(div().text_xs().text_color(muted).child(user))
+            .when(logged_in, |el| el.child(div().text_xs().text_color(muted).child(user)))
+            .when(!logged_in, |el| {
+                el.child(
+                    Button::new("login-btn")
+                        .ghost()
+                        .xsmall()
+                        .label("登录")
+                        .tooltip("登录后可下载云端字体")
+                        .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.open_backstage(Stage::Account, w, cx))),
+                )
+            })
             .child(
                 ribbon::icon_btn(
                     "collapse",
@@ -600,9 +698,6 @@ impl Render for ChiXieApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (bg, fg, border, ribbon_bg) = (theme.background, theme.foreground, theme.border, theme.secondary);
-        if cx.global::<AppState>().user.is_none() {
-            return div().size_full().bg(bg).text_color(fg).child(self.login.clone()).into_any_element();
-        }
         if let Some(stage) = self.backstage {
             return self.render_backstage(stage, cx);
         }
