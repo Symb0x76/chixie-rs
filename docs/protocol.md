@@ -209,13 +209,32 @@ reader that never executes class references.
   - `left_margin`, `top_margin`;
   - `cell_width`, `cell_height`;
   - `row_spacing`, `column_spacing` (mm).
-- How our layout uses them. Each point below is a **VERIFY** best guess until a template capture:
+- **Template captures (2026-11-07, 艾玛体 100, deformation off; ChiXie3's spacing and vertical
+  jitter stay on):**
+  - **我的笔记1** (A4, margins L20 T30 R20 B20, 24 rows), text `你好你好⏎好你⏎你`:
+    - The origin is the writable top-left; the rules sit every 247/24 = 10.29 mm (also measured on
+      screen).
+    - Line tops (glyph y = 0) were at 2.20, 12.27 and 22.07 mm below the origin, i.e. 2.20, 1.98 and
+      1.49 mm into their rows (mean 1.89). That puts the em box's bottom ≈ 1.4 mm = 0.2 em above the
+      row's line.
+    - There is a per-row spread of ≈ ±0.4 mm beyond the ≤ 0.3 mm per-glyph vertical jitter. We
+      model the mean only.
+  - **作文格1** (8 × 8 mm cells, column gap 0, row gap 2.9), text `你好，你好 你。`:
+    - The origin is the grid's top-left.
+    - Each character is centred in its cell at the font size (not scaled), within ±0.3 mm.
+    - Punctuation is drawn low in its own cell, and a space takes a cell.
+    - Pasted line breaks are dropped in grid mode (a ChiXie3 quirk). A typed Enter starts the next
+      row.
+  - Captures are local only: scratchpad `ruled.log` / `grid.log`. Regression tests:
+    `template::tests::{ruled_rows,grid_cells}_match_chixie3_capture`.
+- How our layout uses them:
   - The row pitch is the writable height ÷ rows.
-  - Glyphs sit on the rule: their top is the row top + band + 0.7 × the slack, with the nominal glyph
-    height `EM_UNITS` = 7 font units.
-  - A random row count is drawn once per page.
-  - Columns fill top to bottom, then left to right.
-  - Dual-line mode keeps the text below the upper band.
-  - Grid templates place one character per cell, centred at the font size (not scaled to the cell).
-    Spaces and punctuation take a cell.
+  - Ruled rows: the glyph top is the row bottom − em − 0.2 em (never into the dual-line band), with
+    the nominal glyph height `EM_UNITS` = 7 font units. **Matches the capture.**
+  - Grid templates place one character per cell, centred at the font size. Spaces and punctuation
+    take a cell. **Matches the capture.**
+  - Still **VERIFY** (not captured):
+    - A random row count is drawn once per page.
+    - Columns fill top to bottom, then left to right.
+    - Dual-line mode keeps the text below the upper band.
   - Ruling is never plotted, because the paper is pre-printed.

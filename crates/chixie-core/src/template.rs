@@ -287,6 +287,45 @@ mod tests {
         assert_eq!(doc.pages[0].guides.len(), 48);
     }
 
+    fn fixture_font() -> Font {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/font_fixture.json");
+        Font::from_json(&std::fs::read(p).unwrap()).unwrap()
+    }
+
+    /// Ink top/bottom (mm, y up) of the strokes drawn for one glyph.
+    fn ink_y(strokes: &[Vec<(f32, f32)>]) -> (f32, f32) {
+        strokes.iter().flatten().fold((f32::MIN, f32::MAX), |(t, b), p| (t.max(p.1), b.min(p.1)))
+    }
+
+    /// ChiXie3 capture 2026-11-07, 我的笔记1 (A4, margins 20/30/20/20, 24 rows), 艾玛体 100,
+    /// deformation off: 你 ink tops per row were −2.565, −22.424 (rows 1 and 3), bottoms −8.836,
+    /// −28.777. ChiXie3 adds ≤ 0.3 mm vertical jitter plus a per-row spread (row residuals vs our
+    /// mean model: +0.31, +0.09, −0.40 mm), so allow 0.6 mm.
+    #[test]
+    fn ruled_rows_match_chixie3_capture() {
+        let t = Template::ruled("我的笔记1", (210.0, 297.0), (20.0, 30.0, 20.0, 20.0), 24);
+        let doc = layout("你\n\n你", &fixture_font(), &params(&t));
+        let (t1, b1) = ink_y(&doc.pages[0].strokes[..6]); // 你 = 6 strokes
+        let (t3, b3) = ink_y(&doc.pages[0].strokes[6..]);
+        for (ours, theirs) in [(t1, -2.565), (b1, -8.836), (t3, -22.424), (b3, -28.777)] {
+            assert!((ours - theirs).abs() < 0.6, "ours {ours} vs captured {theirs}");
+        }
+    }
+
+    /// ChiXie3 capture 2026-11-07, 作文格1 (8 mm cells, row gap 2.9): 你 in the 4th cell spans
+    /// x 24.97..32.29, y −1.49..−7.85 (incl. ≤ 0.3 mm jitter): centred in its cell.
+    #[test]
+    fn grid_cells_match_chixie3_capture() {
+        let t = Template::grid("作文格1", (190.0, 255.0), 15.0, 20.0, 20, 20, (8.0, 8.0), (0.0, 2.9));
+        let doc = layout("好好好你", &fixture_font(), &params(&t));
+        let ni = &doc.pages[0].strokes[doc.pages[0].strokes.len() - 6..]; // 你 = 6 strokes
+        let x0 = ni.iter().flatten().map(|p| p.0).fold(f32::MAX, f32::min);
+        let (top, bottom) = ink_y(ni);
+        for (ours, theirs) in [(x0, 24.97), (top, -1.485), (bottom, -7.851)] {
+            assert!((ours - theirs).abs() < 0.7, "ours {ours} vs captured {theirs}");
+        }
+    }
+
     #[test]
     fn store_round_trips_and_names_are_unique() {
         let dir = std::env::temp_dir().join("chixie-core-test-templates");

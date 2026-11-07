@@ -58,7 +58,8 @@
     - font `Select`;
     - Word-blue accent (`ribbon::set_theme`).
   - AUTOTEST covers both templates and the backstage. Screenshots are in the scratchpad (t3-*.png).
-- VERIFY with a ChiXie3 template capture: glyph placement in ruled rows, random-row semantics,
-  dual-line use, grid glyph scaling.
+- Template capture done (2026-11-07): ruled-row placement fixed to match, grid already matched.
+- VERIFY still (not captured): random-row semantics,
+  dual-line use, column fill order.
 - Next: M6 (i18n, window geometry, app icon, release build), then template capture.
 

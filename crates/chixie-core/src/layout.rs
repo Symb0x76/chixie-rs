@@ -32,7 +32,7 @@ pub struct Guide {
 }
 
 /// Nominal glyph height in font units (CJK glyphs span about 0..7). Used to sit text on ruled
-/// rows and centre it in grid cells. VERIFY against a ChiXie3 template capture.
+/// rows and centre it in grid cells; both placements match ChiXie3 captures (docs/protocol.md).
 pub const EM_UNITS: f32 = 7.0;
 
 /// How lines are placed on a page.
@@ -289,10 +289,12 @@ impl Pen<'_> {
                 self.line_w = col_w;
                 self.row_top = r as f32 * pitch;
                 self.row_h = pitch;
-                // Sit on the rule: glyph bottom slightly above the line (VERIFY).
+                // Sit on the rule: the glyph box (em) ends 0.2 em above the row's line. Captured
+                // 2026-11-07 (我的笔记1, A4, 24 rows, size 100): text top 1.89 mm into a 10.29 mm row
+                // on average; ChiXie3 adds a per-row spread of ≈ ±0.35 mm we do not model.
                 let band = band.unwrap_or(0.0).min(pitch);
-                let slack = (pitch - band - self.em).max(0.0);
-                self.text_top = self.row_top + band + slack * 0.7;
+                let gap = 0.2 * self.em;
+                self.text_top = (self.row_top + pitch - self.em - gap).max(self.row_top + band);
             }
             Ruling::Grid { cols, cell: (cw, ch), gap: (cg, rg), .. } => {
                 self.line_x = 0.0;
