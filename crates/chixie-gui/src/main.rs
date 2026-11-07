@@ -14,6 +14,7 @@
 
 mod app;
 mod device;
+mod device_params;
 mod doc_view;
 mod fake;
 mod file_ops;
@@ -217,6 +218,43 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChiXieApp>, cx: &mut App) {
         };
         shot("DEVICE");
         cx.background_executor().timer(pause(2500)).await;
+
+        // 参数设置: machine specs from $$, and profile edits reaching the G-code.
+        cx.update(|cx| {
+            device.update(cx, |d, cx| {
+                d.tab = 1;
+                cx.notify();
+            });
+            let st = cx.global_mut::<AppState>();
+            st.settings.device.profile.write_speed = 5000.0;
+            st.settings.device.profile.pause_after_down_s = 0.1;
+            st.settings.device.profile.pen_down_z = 2.5;
+        });
+        cx.background_executor().timer(pause(300)).await;
+        cx.update(|cx| {
+            let machine = device.read(cx).params.read(cx).machine.clone();
+            let st = cx.global::<AppState>();
+            let doc = app.read(cx).doc.read(cx).document();
+            let g = chixie_core::gcode::emit(&doc.pages[0], &st.settings.device.profile);
+            println!(
+                "AUTOTEST_PARAMS travel={:?} max_feed={:?} dwell={} feed5000={} pen_down_z2_5={}",
+                machine.as_ref().and_then(|m| m.travel),
+                machine.as_ref().and_then(|m| m.max_feed()),
+                g.contains("\nG4 P0.1\n"),
+                g.contains(" F5000\n"),
+                g.contains("G1G90 Z2.5 F"),
+            );
+        });
+        shot("PARAMS");
+        cx.background_executor().timer(pause(2500)).await;
+        cx.update(|cx| {
+            let st = cx.global_mut::<AppState>();
+            st.settings.device.profile = Default::default();
+            device.update(cx, |d, cx| {
+                d.tab = 0;
+                cx.notify();
+            });
+        });
 
         // Templates: ruled paper, then the composition grid; guides never reach the G-code.
         for name in ["信纸 22 行", "作文格 20×20"] {

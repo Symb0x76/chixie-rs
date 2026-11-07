@@ -14,6 +14,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::device_params::DeviceParams;
 use crate::state::AppState;
 
 const LOG_KEEP: usize = 300;
@@ -61,6 +62,9 @@ pub struct DevicePanel {
     /// Outcome of the last finished job (status bar / autotest).
     pub last_end: Option<JobOutcome>,
     console: Entity<InputState>,
+    /// 0 = 连接与控制, 1 = 参数设置.
+    pub tab: usize,
+    pub params: Entity<DeviceParams>,
     _subs: Vec<Subscription>,
 }
 
@@ -79,6 +83,8 @@ impl DevicePanel {
                 }
             }
         });
+        let params = cx.new(|cx| DeviceParams::new(handle.clone(), window, cx));
+        let obs = cx.observe(&params, |_, _, cx| cx.notify());
         let mut this = Self {
             handle,
             connected: None,
@@ -91,7 +97,9 @@ impl DevicePanel {
             job: None,
             last_end: None,
             console,
-            _subs: vec![sub],
+            tab: 0,
+            params,
+            _subs: vec![sub, obs],
         };
         this.refresh_ports(cx);
         this
@@ -171,6 +179,12 @@ impl DevicePanel {
                 self.connecting = false;
                 let ver = info.iter().find(|l| l.starts_with("[VER")).cloned().unwrap_or_default();
                 self.connected = Some(port.clone());
+                // Read the machine's own specs ($$) for the 参数设置 tab and the warnings.
+                self.handle.send(Command::QueryMachine);
+                self.params.update(cx, |p, cx| {
+                    p.connected = true;
+                    cx.notify();
+                });
                 let st = cx.global_mut::<AppState>();
                 if self.port.is_some() {
                     st.settings.device.last_port = self.port.clone();
@@ -182,6 +196,10 @@ impl DevicePanel {
                 self.connecting = false;
                 self.connected = None;
                 self.status = None;
+                self.params.update(cx, |p, cx| {
+                    p.connected = false;
+                    cx.notify();
+                });
                 let was_job = self.job.take().is_some();
                 match (was_job, page, last_line) {
                     (true, Some(p), Some(l)) => Notice::Warn(format!(
@@ -220,6 +238,13 @@ impl DevicePanel {
                     JobOutcome::Stopped => Notice::Warn(format!("已停止（第 {} 页，第 {line} 行），笔已抬起", page + 1)),
                     JobOutcome::Failed(e) => Notice::Error(format!("书写出错（第 {} 页，第 {line} 行）：{e}", page + 1)),
                 }
+            }
+            Event::Machine(m) => {
+                self.params.update(cx, |p, cx| {
+                    p.machine = Some(m);
+                    cx.notify();
+                });
+                Notice::None
             }
             Event::Error(e) => {
                 self.connecting = false;
@@ -437,13 +462,27 @@ impl Render for DevicePanel {
             .border_l_1()
             .border_color(border)
             .overflow_y_scroll()
-            .child(self.connection_section(cx))
-            .child(sep())
-            .child(h_flex().gap_3().child(div().text_sm().child(format!("状态：{state}"))).child(div().text_sm().font_family("Consolas").child(pos_text)))
-            .child(self.control_section(cx))
-            .child(sep())
-            .child(self.job_section(cx))
-            .child(sep())
-            .child(self.console_section(cx))
+            .child(
+                TabBar::new("dev-tabs")
+                    .small()
+                    .underline()
+                    .selected_index(self.tab)
+                    .children([Tab::new().label("连接与控制"), Tab::new().label("参数设置")])
+                    .on_click(cx.listener(|t, ix: &usize, _w, cx| {
+                        t.tab = *ix;
+                        cx.notify();
+                    })),
+            )
+            .when(self.tab == 1, |el| el.child(self.params.clone()))
+            .when(self.tab == 0, |el| {
+                el.child(self.connection_section(cx))
+                    .child(sep())
+                    .child(h_flex().gap_3().child(div().text_sm().child(format!("状态：{state}"))).child(div().text_sm().font_family("Consolas").child(pos_text)))
+                    .child(self.control_section(cx))
+                    .child(sep())
+                    .child(self.job_section(cx))
+                    .child(sep())
+                    .child(self.console_section(cx))
+            })
     }
 }

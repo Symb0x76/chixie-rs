@@ -437,12 +437,25 @@ impl ChiXieApp {
         let profile = cx.global::<AppState>().settings.device.profile.clone();
         let pages: Vec<String> = doc.pages.iter().map(|p| gcode::emit(p, &profile)).collect();
         let (w, h) = doc.bounds().map(|(x0, y0, x1, y1)| (x1 - x0, y1 - y0)).unwrap_or_default();
-        let over = w > TRAVEL_MM || h > TRAVEL_MM;
+        // The machine's own limits ($$) when known, else the verified board's.
+        let machine = self.device.read(cx).params.read(cx).machine.clone();
+        let (tx, ty) = machine.as_ref().and_then(|m| m.travel).unwrap_or((TRAVEL_MM, TRAVEL_MM));
+        let over = w > tx || h > ty;
+        let mut warn = String::new();
+        if over {
+            warn.push_str(&format!("⚠ 超出机器行程 {tx:.0} × {ty:.0} mm！"));
+        }
+        if let Some(max) = machine.as_ref().and_then(|m| m.max_feed()).filter(|m| profile.write_speed > *m) {
+            warn.push_str(&format!("写字速度 {:.0} 高于机器最大速度 {max:.0}，将按最大速度运行。", profile.write_speed));
+        }
+        if !profile.firmware.supported() {
+            window.push_notification(Notification::error("当前固件设置为 Marlin，暂不支持书写（设备 › 参数设置）"), cx);
+            return;
+        }
         let desc = format!(
-            "共 {} 页（{} 笔），书写范围 {w:.1} × {h:.1} mm。{}请确认纸张已放好、笔已装好，起点为当前原点；写完后笔会回到原点。",
+            "共 {} 页（{} 笔），书写范围 {w:.1} × {h:.1} mm。{warn}请确认纸张已放好、笔已装好，起点为当前原点；写完后笔会回到原点。",
             pages.len(),
             doc.stroke_count(),
-            if over { "⚠ 超出 300 mm 行程！" } else { "" }
         );
         self.show_pane = true;
         let device = self.device.clone();

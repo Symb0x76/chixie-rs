@@ -238,3 +238,29 @@ reader that never executes class references.
     - Columns fill top to bottom, then left to right.
     - Dual-line mode keeps the text below the upper band.
   - Ruling is never plotted, because the paper is pre-printed.
+
+## Device parameters (`config.ini` `[DeviceConfig] DeviceParams`, decoded 2026-11-07)
+- QSettings `@Variant(...)` value holding a QVariantMap of the form `{device name: {key: value}}`.
+  - The bytes are ini-escaped: `\0`, `\xHH`, `\b`, `\n`, `\f` …
+  - Hex-digit characters that follow an escape are escaped themselves, so a `\x` escape can read
+    every following hex digit.
+  - QDataStream is big-endian. Each QVariant is the u32 type id **followed directly by the value;
+    there is no is-null byte**. Types: 8 map (u32 count, then QString key + QVariant pairs),
+    10 QString (u32 byte length + UTF-16BE), 2 int.
+- Keys:
+  - `deviceType` (int);
+  - `firmware` (int);
+  - `penUp` (int Z);
+  - `penDown`, `writeSpeed`, `pauseTime` (strings);
+  - `x_plus` / `x_reduce` / `y_plus` / `y_reduce` (`X+`, `X-`, `Y+`, `Y-`).
+- Mapping into chixie-rs (`chixie_core::chixie3_devices`):
+  - `deviceType` 0 = 步进抬笔写字机 and `firmware` 3 = ChiXie_ESP32_Grbl match the verified
+    board.
+  - Other indices follow the order of the names in the binary: **VERIFY** by screenshotting the
+    drop-downs.
+  - `writeSpeed` sets both the write and travel feed. ChiXie3 streams every move at that one feed,
+    and the board clamps it to `$110/$111` = 12000.
+- `pauseTime` (落笔后暂停) is emitted by us as `G4 P<s>` after each pen-down. ChiXie3's exact dwell
+  form is **VERIFY** with a capture.
+- `$$` (the machine's own specs) is read on connect with `Command::QueryMachine`. The GUI shows it
+  under 设备 › 参数设置 › 机器规格 and uses the travel and max rate for the start-job warnings.

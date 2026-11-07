@@ -42,6 +42,11 @@ impl SimGrbl {
         let up = line.to_ascii_uppercase();
         if up == "$I" {
             self.out.push_back("[VER:1.1h.SIM:]".into());
+        } else if up == "$$" {
+            // The verified board's settings (docs/protocol.md hardware probe).
+            for l in ["$100=80.000", "$101=80.000", "$110=12000.000", "$111=12000.000", "$120=3000.000", "$121=3000.000", "$130=300.000", "$131=300.000"] {
+                self.out.push_back(l.into());
+            }
         } else if up == "$X" {
             self.alarm = false;
         } else if up.starts_with("G92") {
