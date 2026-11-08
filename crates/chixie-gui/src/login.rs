@@ -123,7 +123,13 @@ impl Render for LoginView {
                     .child(Input::new(&self.password).mask_toggle())
                     .child(
                         Checkbox::new("remember")
-                            .label("记住密码（保存在 Windows 凭据管理器）")
+                            .label(if cfg!(target_os = "windows") {
+                                "记住密码（保存在 Windows 凭据管理器）"
+                            } else if cfg!(target_os = "macos") {
+                                "记住密码（保存在钥匙串）"
+                            } else {
+                                "记住密码（保存在系统密钥环）"
+                            })
                             .checked(self.remember)
                             .on_click(cx.listener(|this, checked: &bool, _w, cx| {
                                 this.remember = *checked;

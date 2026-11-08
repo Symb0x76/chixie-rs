@@ -11,7 +11,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::switch::Switch;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -260,15 +260,15 @@ impl DeviceParams {
                 h_flex()
                     .gap_3()
                     .flex_wrap()
-                    .child(Switch::new("swap").small().label("交换 X/Y").checked(am.swap_xy).on_click(cx.listener(|v, on: &bool, _w, cx| {
+                    .child(Checkbox::new("swap").small().label("交换 X/Y").checked(am.swap_xy).on_click(cx.listener(|v, on: &bool, _w, cx| {
                         let on = *on;
                         v.edit(cx, |p| p.axis_map.swap_xy = on)
                     })))
-                    .child(Switch::new("invx").small().label("X 反向").checked(am.invert_x).on_click(cx.listener(|v, on: &bool, _w, cx| {
+                    .child(Checkbox::new("invx").small().label("X 反向").checked(am.invert_x).on_click(cx.listener(|v, on: &bool, _w, cx| {
                         let on = *on;
                         v.edit(cx, |p| p.axis_map.invert_x = on)
                     })))
-                    .child(Switch::new("invy").small().label("Y 反向").checked(am.invert_y).on_click(cx.listener(|v, on: &bool, _w, cx| {
+                    .child(Checkbox::new("invy").small().label("Y 反向").checked(am.invert_y).on_click(cx.listener(|v, on: &bool, _w, cx| {
                         let on = *on;
                         v.edit(cx, |p| p.axis_map.invert_y = on)
                     }))),

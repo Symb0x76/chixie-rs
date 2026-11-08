@@ -15,11 +15,11 @@ use chixie_core::editor::EditDoc;
 use chixie_core::gcode;
 use chixie_core::session::{Command, Event, FontListKind};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{SelectEvent, SelectState};
-use gpui_kit::component::{ActiveTheme as _, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
+use gpui_kit::component::{ActiveTheme as _, IndexPath, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -28,6 +28,7 @@ pub use backstage::Stage;
 use crate::device::{DevicePanel, Notice};
 use crate::doc_view::{self, DocView};
 use crate::file_ops;
+use crate::font_preview::{FontItem, FontPreview};
 use crate::fonts::{FontsEvent, FontsView};
 use crate::login::LoginView;
 use crate::ribbon::{self, RIBBON_H};
@@ -55,14 +56,18 @@ pub struct ChiXieApp {
     ribbon_collapsed: bool,
     font_size: Entity<InputState>,
     line_height: Entity<InputState>,
-    font_select: Entity<SelectState<Vec<String>>>,
-    /// Font ids and labels, parallel to the font select's items.
+    font_select: Entity<SelectState<Vec<FontItem>>>,
+    /// Font ids, parallel to the font select's items.
     font_ids: Vec<i64>,
-    font_names: Vec<String>,
+    /// Local fonts whose preview is being built in the background.
+    previews_pending: std::collections::HashSet<i64>,
     style_dialog: Entity<StyleDialog>,
     backstage_focus: FocusHandle,
     /// Where 保存 writes; `None` until 另存为 / 打开 of a `.chx`.
     file: Option<PathBuf>,
+    zoom_slider: Entity<SliderState>,
+    /// Last title pushed to the OS window (taskbar).
+    win_title: String,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -83,10 +88,11 @@ impl ChiXieApp {
         let page = cx.global::<AppState>().settings.page.clone();
         let font_size = cx.new(|cx| InputState::new(window, cx).step(5.0).min(5.0).max(1000.0).default_value(fmt_num(page.font_size)));
         let line_height = cx.new(|cx| InputState::new(window, cx).step(0.25).min(1.0).max(200.0).default_value(fmt_num(page.line_height)));
-        let font_select = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
+        let font_select = cx.new(|cx| SelectState::new(Vec::<FontItem>::new(), None, window, cx));
         let templates = cx.new(|cx| TemplatesView::new(window, cx));
         let style_dialog = cx.new(|cx| StyleDialog::new(window, cx));
         let device = cx.new(|cx| DevicePanel::new(device, window, cx));
+        let zoom_slider = cx.new(|_| SliderState::new().min(0.0).max(100.0).step(0.5).default_value(50.0));
 
         let pump = cx.spawn_in(window, async move |this, cx| {
             while let Ok(ev) = events.recv().await {
@@ -111,7 +117,16 @@ impl ChiXieApp {
         });
         let subs = vec![
             cx.observe_global::<AppState>(|_, cx| cx.notify()),
-            cx.observe(&doc, |_, _, cx| cx.notify()),
+            cx.observe_in(&doc, window, |this, _, window, cx| {
+                this.sync_zoom_slider(window, cx);
+                cx.notify();
+            }),
+            cx.subscribe_in(&zoom_slider, window, |this, _s, ev: &SliderEvent, _w, cx| {
+                if let SliderEvent::Change(v) = ev {
+                    let z = slider_to_zoom(v.start()) / 100.0 * doc_view::ZOOM_100;
+                    this.doc.update(cx, |d, cx| d.set_zoom(z, cx));
+                }
+            }),
             cx.observe(&device, |_, _, cx| cx.notify()),
             cx.subscribe_in(&font_size, window, |this, s, ev: &InputEvent, _w, cx| {
                 if let (InputEvent::Change, Some(v)) = (ev, parse_in(s, cx, 5.0, 1000.0)) {
@@ -123,9 +138,9 @@ impl ChiXieApp {
                     this.edit_settings(cx, |st| st.settings.page.line_height = v);
                 }
             }),
-            cx.subscribe_in(&font_select, window, |this, _s, ev: &SelectEvent<Vec<String>>, window, cx| {
-                if let SelectEvent::Confirm(Some(name)) = ev {
-                    this.choose_font(name, window, cx);
+            cx.subscribe_in(&font_select, window, |this, _s, ev: &SelectEvent<Vec<FontItem>>, window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev {
+                    this.choose_font(*id, window, cx);
                 }
             }),
             cx.subscribe_in(&fonts, window, |this, _v, ev: &FontsEvent, window, cx| match ev {
@@ -165,10 +180,12 @@ impl ChiXieApp {
             line_height,
             font_select,
             font_ids: Vec::new(),
-            font_names: Vec::new(),
+            previews_pending: Default::default(),
             style_dialog,
             backstage_focus: cx.focus_handle(),
             file: None,
+            zoom_slider,
+            win_title: String::new(),
             _tasks: vec![pump, dev_pump, autosave],
             _subs: subs,
         }
@@ -211,13 +228,25 @@ impl ChiXieApp {
             }
             Event::Fonts { kind, page, fonts } => {
                 let collected = kind == FontListKind::Collected;
+                // A font downloaded before the lists arrived was saved under a placeholder name;
+                // the server's name wins.
+                let renamed = self.repair_font_names(&fonts, cx);
                 self.fonts.update(cx, |f, cx| f.set_list(kind, page, fonts, cx));
-                if collected {
+                if collected || renamed {
                     self.sync_font_select(window, cx);
                 }
             }
             Event::FontLoaded { id, font } => {
-                let name = self.fonts.read(cx).name_of(id).unwrap_or_else(|| format!("字体 #{id}"));
+                // The last font is fetched at login, often before the font lists arrive.
+                let name = self
+                    .fonts
+                    .read(cx)
+                    .name_of(id)
+                    .or_else(|| cx.global::<AppState>().fonts.name_of(id).filter(|n| !is_placeholder_name(n)))
+                    .unwrap_or_else(|| placeholder_name(id));
+                if let Some(p) = FontPreview::new(&font, &name) {
+                    cx.global_mut::<AppState>().previews.insert(id, std::sync::Arc::new(p));
+                }
                 self.fonts.update(cx, |f, cx| f.font_loaded(cx));
                 let glyphs = font.glyphs.len();
                 // Keep a copy on this computer so the font works without logging in next time.
@@ -252,25 +281,79 @@ impl ChiXieApp {
     /// Font picker items = downloaded fonts, then collected fonts not yet downloaded (marked
     /// 云端, login needed); selection = the active font.
     fn sync_font_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut list: Vec<(i64, String)> = cx.global::<AppState>().fonts.list().into_iter().map(|f| (f.id, f.name)).collect();
+        let st = cx.global::<AppState>();
+        let local = st.fonts.list();
+        let mut items: Vec<FontItem> = local
+            .iter()
+            .map(|f| FontItem { id: f.id, name: f.name.clone().into(), cloud: false })
+            .collect();
         for f in self.fonts.read(cx).collected() {
-            if !list.iter().any(|(id, _)| *id == f.id) {
-                list.push((f.id, format!("{}（云端）", f.font_name)));
+            if !items.iter().any(|it| it.id == f.id) {
+                items.push(FontItem { id: f.id, name: f.font_name.clone().into(), cloud: true });
             }
         }
-        let active = cx.global::<AppState>().active_font.as_ref().map(|f| f.id);
-        self.font_ids = list.iter().map(|(id, _)| *id).collect();
-        let names: Vec<String> = list.into_iter().map(|(_, n)| n).collect();
-        self.font_names = names.clone();
+        let missing: Vec<(i64, String)> =
+            local.into_iter().filter(|f| !st.previews.contains_key(&f.id) && !self.previews_pending.contains(&f.id)).map(|f| (f.id, f.name)).collect();
+        let active = st.active_font.as_ref().map(|f| f.id);
+        self.font_ids = items.iter().map(|it| it.id).collect();
         let selected = active.and_then(|id| self.font_ids.iter().position(|&x| x == id)).map(IndexPath::new);
         self.font_select.update(cx, |s, cx| {
-            s.set_items(names, window, cx);
+            s.set_items(items, window, cx);
             s.set_selected_index(selected, window, cx);
         });
+        if !missing.is_empty() {
+            self.build_previews(missing, window, cx);
+        }
     }
 
-    fn choose_font(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.font_names.iter().position(|n| n == name).and_then(|i| self.font_ids.get(i).copied()) else { return };
+    /// Read local fonts off the UI thread and keep only their small previews.
+    fn build_previews(&mut self, fonts: Vec<(i64, String)>, window: &mut Window, cx: &mut Context<Self>) {
+        self.previews_pending.extend(fonts.iter().map(|(id, _)| *id));
+        let store = cx.global::<AppState>().fonts.clone();
+        let task = cx.background_executor().spawn(async move {
+            fonts
+                .into_iter()
+                .filter_map(|(id, name)| {
+                    let font = store.load(id).inspect_err(|e| log::warn!("preview of font {id}: {e}")).ok()?;
+                    FontPreview::new(&font, &name).map(|p| (id, std::sync::Arc::new(p)))
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let built = task.await;
+            let _ = this.update_in(cx, |app, window, cx| {
+                for (id, p) in built {
+                    app.previews_pending.remove(&id);
+                    cx.global_mut::<AppState>().previews.insert(id, p);
+                }
+                app.sync_font_select(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Rename locally saved fonts after the server's names; true if any changed.
+    fn repair_font_names(&mut self, fonts: &[chixie_core::api::FontInfo], cx: &mut Context<Self>) -> bool {
+        let st = cx.global_mut::<AppState>();
+        let mut changed = false;
+        for f in fonts {
+            match st.fonts.rename(f.id, &f.font_name) {
+                Ok(true) => {
+                    changed = true;
+                    // The preview may have been a sample for want of the name.
+                    st.previews.remove(&f.id);
+                    if let Some(a) = st.active_font.as_mut().filter(|a| a.id == f.id) {
+                        a.name = f.font_name.clone();
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => log::warn!("renaming local font {}: {e}", f.id),
+            }
+        }
+        changed
+    }
+
+    fn choose_font(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         if cx.global::<AppState>().active_font.as_ref().map(|f| f.id) != Some(id) {
             self.use_font_id(id, window, cx);
         }
@@ -292,7 +375,7 @@ impl ChiXieApp {
     pub fn load_local_font(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         let store = cx.global::<AppState>().fonts.clone();
         let task = cx.background_executor().spawn(async move {
-            let name = store.name_of(id).unwrap_or_else(|| format!("字体 #{id}"));
+            let name = store.name_of(id).unwrap_or_else(|| placeholder_name(id));
             store.load(id).map(|f| (name, f))
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -300,6 +383,11 @@ impl ChiXieApp {
             let _ = this.update_in(cx, |app, window, cx| match res {
                 Ok((name, font)) => {
                     let st = cx.global_mut::<AppState>();
+                    if !st.previews.contains_key(&id)
+                        && let Some(p) = FontPreview::new(&font, &name)
+                    {
+                        st.previews.insert(id, std::sync::Arc::new(p));
+                    }
                     st.active_font = Some(ActiveFont { id, name, font: std::sync::Arc::new(font) });
                     st.settings.page.font_id = Some(id);
                     st.save_settings();
@@ -473,7 +561,7 @@ impl ChiXieApp {
         let fonts = self.fonts.clone();
         fonts.update(cx, |f, cx| f.refresh_collected(cx));
         window.open_dialog(cx, move |dialog, _w, _cx| {
-            dialog.title("字体库").w(px(820.)).child(div().h(px(520.)).child(fonts.clone()))
+            dialog.title("字体库").w(px(960.)).child(div().h(px(640.)).child(fonts.clone()))
         });
     }
 
@@ -589,29 +677,128 @@ impl ChiXieApp {
     // ---- chrome ----
 
     /// Quick access toolbar + 文件 + tab titles + collapse chevron.
+    /// Document name shown in the title bar and the taskbar (Word: "文档1 - Word").
+    fn doc_title(&self) -> String {
+        let name = self.file.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "文档1".into());
+        format!("{name} - 赤写")
+    }
+
+    /// Word's caption: app mark + quick access toolbar on the left, the document name centred,
+    /// the account and the window controls on the right. The whole bar drags the window.
+    #[inline(never)]
+    fn title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let c = ribbon::chrome(cx);
+        let st = cx.global::<AppState>();
+        let user = st.user.as_ref().map(|u| u.name.clone());
+        let act = |a: Box<dyn Action>| ribbon_tabs::editor_action(self.doc.clone(), a);
+        let in_backstage = self.backstage.is_some();
+        let qat = h_flex()
+            .gap_0p5()
+            // Word for Mac shows no app mark next to the traffic lights.
+            .when(!cfg!(target_os = "macos"), |el| el.child(
+                div()
+                    .size(px(20.))
+                    .mr_2()
+                    .rounded_sm()
+                    .bg(c.title_fg)
+                    .text_color(c.title_bg)
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child("写"),
+            ))
+            .when(!in_backstage, |el| {
+                el.child(
+                    ribbon::title_btn("qat-save", IconName::Save, format!("保存 ({})", ribbon::shortcut("S")), &c)
+                        .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.save_doc(false, w, cx))),
+                )
+                .child(ribbon::title_btn("qat-undo", IconName::Undo2, format!("撤销 ({})", ribbon::shortcut("Z")), &c).on_click(act(Box::new(doc_view::Undo))))
+                .child(ribbon::title_btn("qat-redo", IconName::Redo2, format!("重做 ({})", ribbon::redo_shortcut()), &c).on_click(act(Box::new(doc_view::Redo))))
+            });
+        let account = match user {
+            Some(name) => h_flex()
+                .gap_2()
+                .px_2()
+                .child(div().text_xs().child(name.clone()))
+                .child(
+                    div()
+                        .size(px(24.))
+                        .rounded_full()
+                        .bg(c.title_hover)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .child(name.chars().next().map(String::from).unwrap_or_default()),
+                )
+                .into_any_element(),
+            None => div()
+                .id("login-btn")
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .h(px(26.))
+                .px_3()
+                .rounded_sm()
+                .flex()
+                .items_center()
+                .text_xs()
+                .cursor_pointer()
+                .hover({
+                    let h = c.title_hover;
+                    move |s| s.bg(h)
+                })
+                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("登录后可下载云端字体").build(w, cx))
+                .child("登录")
+                .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.open_backstage(Stage::Account, w, cx)))
+                .into_any_element(),
+        };
+        let content = h_flex()
+            .id("title-content")
+            .relative()
+            .flex_1()
+            .h_full()
+            .pl_2()
+            // Centred like Word, independent of the side widths.
+            .child(div().absolute().inset_0().flex().items_center().justify_center().text_sm().child(self.doc_title()))
+            .child(qat)
+            .child(div().flex_1())
+            .child(account);
+        if cfg!(target_os = "windows") {
+            // Our own buttons; the OS handles drag, snap and the buttons through hit-test areas.
+            h_flex()
+                .id("title-bar")
+                .w_full()
+                .h(px(ribbon::TITLE_H))
+                .flex_shrink_0()
+                .bg(c.title_bg)
+                .text_color(c.title_fg)
+                .child(content.window_control_area(WindowControlArea::Drag))
+                .child(ribbon::window_controls(window, &c))
+                .into_any_element()
+        } else {
+            // macOS: room for the system traffic lights on the left. Linux: gpui-component draws
+            // the window buttons (only under client-side decorations). Both drag by mouse-move.
+            TitleBar::new()
+                .h(px(ribbon::TITLE_H))
+                .bg(c.title_bg)
+                .text_color(c.title_fg)
+                .border_color(cx.theme().border.opacity(0.6))
+                .child(content)
+                .into_any_element()
+        }
+    }
+
+    /// 文件 + tab titles + collapse chevron, on the light strip above the ribbon card.
     #[inline(never)]
     fn tab_strip(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (border, muted) = (theme.border, theme.muted_foreground);
-        let user = cx.global::<AppState>().user.as_ref().map(|u| u.name.clone()).unwrap_or_default();
-        let logged_in = cx.global::<AppState>().user.is_some();
-        let act = |a: Box<dyn Action>| ribbon_tabs::editor_action(self.doc.clone(), a);
         h_flex()
-            .h(px(36.))
+            .h(px(34.))
             .px_2()
-            .gap_1()
-            .child(ribbon::icon_btn("qat-save", IconName::Save, "保存 (Ctrl+S)").on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.save_doc(false, w, cx))))
-            .child(ribbon::icon_btn("qat-undo", IconName::Undo2, "撤销 (Ctrl+Z)").on_click(act(Box::new(doc_view::Undo))))
-            .child(ribbon::icon_btn("qat-redo", IconName::Redo2, "重做 (Ctrl+Y)").on_click(act(Box::new(doc_view::Redo))))
-            .child(div().w(px(1.)).h(px(18.)).mx_1().bg(border))
-            .child(
-                Button::new("file-tab")
-                    .primary()
-                    .small()
-                    .px_4()
-                    .label("文件")
-                    .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.open_backstage(Stage::New, w, cx))),
-            )
+            .gap_0p5()
+            .items_end()
+            .child(ribbon::tab_item(TABS.len(), "文件", false, cx).on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.open_backstage(Stage::New, w, cx))))
             .children(TABS.iter().enumerate().map(|(i, label)| {
                 ribbon::tab_item(i, label, i == self.tab, cx).on_click(cx.listener(move |t, _: &ClickEvent, _w, cx| {
                     t.tab = i;
@@ -620,17 +807,6 @@ impl ChiXieApp {
                 }))
             }))
             .child(div().flex_1())
-            .when(logged_in, |el| el.child(div().text_xs().text_color(muted).child(user)))
-            .when(!logged_in, |el| {
-                el.child(
-                    Button::new("login-btn")
-                        .ghost()
-                        .xsmall()
-                        .label("登录")
-                        .tooltip("登录后可下载云端字体")
-                        .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.open_backstage(Stage::Account, w, cx))),
-                )
-            })
             .child(
                 ribbon::icon_btn(
                     "collapse",
@@ -658,67 +834,215 @@ impl ChiXieApp {
         let zoom_pct = (d.zoom() / doc_view::ZOOM_100 * 100.0).round();
         let caret_page = d.caret_page() + 1;
         let dev = self.device.read(cx);
-        let (dev_summary, job) = (dev.summary(), dev.job);
+        let (dev_summary, dev_connected, job) = (dev.summary(), dev.connected.is_some(), dev.job);
         let theme = cx.theme();
+        let (muted, hover, primary, danger) = (theme.muted_foreground, theme.secondary_hover, theme.primary, theme.danger);
+        let strip = ribbon::chrome(cx).strip_bg;
+        // Word's status bar items are flat cells that highlight on hover.
+        let cell = move |id: &'static str| {
+            h_flex().id(id).h_full().px_2().gap_1().items_center().hover(move |s| s.bg(hover))
+        };
         h_flex()
             .w_full()
-            .h(px(26.))
-            .px_3()
-            .gap_4()
-            .bg(theme.muted)
-            .border_t_1()
-            .border_color(theme.border)
-            .text_color(theme.muted_foreground)
+            .h(px(24.))
+            .px_1()
+            .flex_shrink_0()
+            .bg(strip)
+            .text_color(muted)
             .text_xs()
-            .child(format!("第 {caret_page} 页，共 {pages} 页"))
-            .child(format!("{words} 个字"))
+            .child(cell("sb-page").child(format!("第 {caret_page} 页，共 {pages} 页")))
+            .child(cell("sb-words").child(format!("{words} 个字")))
             .when(missing > 0, |el| {
                 let chars: String = layout.missing.iter().take(12).collect();
-                el.child(format!("缺字 {missing}：{chars}"))
+                el.child(
+                    cell("sb-missing")
+                        .text_color(danger)
+                        .child(gpui_kit::component::Icon::new(IconName::TriangleAlert).with_size(px(12.)))
+                        .child(format!("缺字 {missing}：{chars}")),
+                )
             })
-            .child(format!("字体：{font}"))
-            .child(format!("模板：{template}"))
-            .child(dev_summary)
+            .child(
+                cell("sb-font")
+                    .cursor_pointer()
+                    .child(format!("字体：{font}"))
+                    .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.open_fonts(w, cx))),
+            )
+            .child(cell("sb-template").child(format!("模板：{template}")))
+            .child(
+                cell("sb-device")
+                    .cursor_pointer()
+                    .child(div().size(px(7.)).rounded_full().bg(if dev_connected { gpui_kit::green() } else { muted.opacity(0.6) }))
+                    .child(dev_summary)
+                    .on_click(cx.listener(|t, _: &ClickEvent, _w, cx| {
+                        t.tab = TAB_DEVICE;
+                        t.show_pane = true;
+                        t.ribbon_collapsed = false;
+                        cx.notify();
+                    })),
+            )
             .when_some(job, |el, j| {
                 let s = match j.awaiting {
                     Some(n) => format!("等待换纸（第 {} 页）", n + 1),
                     None => format!("书写 第 {}/{} 页 {:.0}%{}", j.page + 1, j.pages, j.percent(), if j.paused { "（暂停）" } else { "" }),
                 };
-                el.child(s)
+                el.child(
+                    cell("sb-job")
+                        .text_color(primary)
+                        .child(div().w(px(60.)).h(px(4.)).rounded_full().bg(muted.opacity(0.3)).child(
+                            div().h_full().rounded_full().bg(primary).w(relative((j.percent() / 100.0).clamp(0.0, 1.0))),
+                        ))
+                        .child(s),
+                )
             })
             .child(div().flex_1())
             .child(ribbon::icon_btn("sb-zout", IconName::Minus, "缩小").on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.zoom_by(1.0 / 1.1, cx))))
-            .child(format!("{zoom_pct}%"))
+            .child(div().w(px(110.)).px_1().child(Slider::new(&self.zoom_slider)))
             .child(ribbon::icon_btn("sb-zin", IconName::Plus, "放大").on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.zoom_by(1.1, cx))))
+            .child(
+                cell("sb-zoom")
+                    .w(px(52.))
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(format!("{zoom_pct}%"))
+                    .on_click(cx.listener(|t, _: &ClickEvent, _w, cx| {
+                        t.doc.update(cx, |d, cx| d.set_zoom(doc_view::ZOOM_100, cx));
+                    })),
+            )
             .into_any_element()
+    }
+
+    /// Word-style task pane: titled header with a close button over the device panel.
+    #[inline(never)]
+    fn task_pane(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let border = theme.border;
+        let card = ribbon::chrome(cx).card_bg;
+        v_flex()
+            .w(px(320.))
+            .h_full()
+            .flex_shrink_0()
+            .bg(card)
+            .border_l_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .h(px(40.))
+                    .px_3()
+                    .flex_shrink_0()
+                    .child(div().flex_1().text_base().font_weight(FontWeight::SEMIBOLD).child("设备"))
+                    .child(ribbon::icon_btn("pane-close", IconName::Close, "关闭").on_click(cx.listener(|t, _: &ClickEvent, _w, cx| {
+                        t.show_pane = false;
+                        cx.notify();
+                    }))),
+            )
+            .child(div().flex_1().min_h_0().child(self.device.clone()))
+            .into_any_element()
+    }
+
+    /// Keep the status bar slider on the editor's zoom (Ctrl+wheel, buttons, 页宽 change it too).
+    fn sync_zoom_slider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pct = self.doc.read(cx).zoom() / doc_view::ZOOM_100 * 100.0;
+        let v = zoom_to_slider(pct);
+        if (self.zoom_slider.read(cx).value().start() - v).abs() > 0.01 {
+            self.zoom_slider.update(cx, |s, cx| s.set_value(v, window, cx));
+        }
     }
 }
 
+/// Word's zoom slider is two-sided: the left half spans the minimum..100 %, the right half
+/// 100 %..maximum, so 100 % always sits in the middle.
+fn zoom_to_slider(pct: f32) -> f32 {
+    let (lo, hi) = zoom_pct_range();
+    if pct <= 100.0 { (pct - lo) / (100.0 - lo) * 50.0 } else { 50.0 + (pct - 100.0) / (hi - 100.0) * 50.0 }.clamp(0.0, 100.0)
+}
+
+fn slider_to_zoom(v: f32) -> f32 {
+    let (lo, hi) = zoom_pct_range();
+    if v <= 50.0 { lo + v / 50.0 * (100.0 - lo) } else { 100.0 + (v - 50.0) / 50.0 * (hi - 100.0) }
+}
+
+fn zoom_pct_range() -> (f32, f32) {
+    (doc_view::ZOOM_MIN / doc_view::ZOOM_100 * 100.0, doc_view::ZOOM_MAX / doc_view::ZOOM_100 * 100.0)
+}
+
 impl Render for ChiXieApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (bg, fg, border, ribbon_bg) = (theme.background, theme.foreground, theme.border, theme.secondary);
-        if let Some(stage) = self.backstage {
-            return self.render_backstage(stage, cx);
+        let (bg, fg, border) = (theme.background, theme.foreground, theme.border);
+        let c = ribbon::chrome(cx);
+        let title = self.doc_title();
+        if title != self.win_title {
+            window.set_window_title(&title);
+            self.win_title = title;
         }
-        v_flex()
+        let title_bar = self.title_bar(window, cx);
+        let body = if let Some(stage) = self.backstage {
+            self.render_backstage(stage, cx)
+        } else {
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(
+                    v_flex()
+                        .w_full()
+                        .flex_shrink_0()
+                        .bg(c.strip_bg)
+                        .child(self.tab_strip(cx))
+                        .when(!self.ribbon_collapsed, |el| {
+                            el.child(
+                                div().w_full().px_2().pb_1p5().child(
+                                    div()
+                                        .w_full()
+                                        .h(px(RIBBON_H))
+                                        .py_1()
+                                        .rounded_lg()
+                                        .bg(c.card_bg)
+                                        .border_1()
+                                        .border_color(border.opacity(0.7))
+                                        .shadow_xs()
+                                        .overflow_hidden()
+                                        .child(self.ribbon_body(cx)),
+                                ),
+                            )
+                        })
+                        .when(self.ribbon_collapsed, |el| el.pb_1()),
+                )
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .border_t_1()
+                        .border_color(border.opacity(0.6))
+                        .child(div().flex_1().h_full().min_w_0().child(self.doc.clone()))
+                        .when(self.show_pane, |el| el.child(self.task_pane(cx))),
+                )
+                .child(self.status_bar(cx))
+                .into_any_element()
+        };
+        let root = v_flex()
             .size_full()
             .bg(bg)
             .text_color(fg)
-            .child(div().bg(ribbon_bg).child(self.tab_strip(cx)))
-            .when(!self.ribbon_collapsed, |el| {
-                el.child(div().w_full().h(px(RIBBON_H)).bg(ribbon_bg).border_b_1().border_color(border).py_1().child(self.ribbon_body(cx)))
-            })
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(div().flex_1().h_full().min_w_0().child(self.doc.clone()))
-                    .when(self.show_pane, |el| el.child(self.device.clone())),
-            )
-            .child(self.status_bar(cx))
-            .into_any_element()
+            .on_action(cx.listener(|t, _: &doc_view::Save, w, cx| t.save_doc(false, w, cx)))
+            .child(title_bar)
+            .child(body);
+        if cfg!(target_os = "linux") {
+            // Client-side decorations: shadow and resize edges (a no-op under a server frame).
+            gpui_kit::component::window_border().child(root).into_any_element()
+        } else {
+            root.into_any_element()
+        }
     }
+}
+
+/// Name for a font whose real name is not known yet (fixed by `repair_font_names`).
+fn placeholder_name(id: i64) -> String {
+    format!("字体 #{id}")
+}
+
+fn is_placeholder_name(name: &str) -> bool {
+    name.starts_with("字体 #")
 }
 
 pub(crate) fn fmt_num(v: f32) -> String {

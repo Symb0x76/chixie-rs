@@ -447,20 +447,17 @@ pub fn state_zh(s: &str) -> &'static str {
 impl Render for DevicePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (bg, border) = (theme.background, theme.border);
+        let border = theme.border;
         let pos = self.status.as_ref().and_then(|s| s.wpos.or(s.mpos));
         let state = self.status.as_ref().map(|s| state_zh(&s.state)).unwrap_or("—");
         let pos_text = pos.map(|m| format!("X {:.2}   Y {:.2}", m[0], m[1])).unwrap_or_else(|| "X —   Y —".into());
         let sep = || div().h(px(1.)).w_full().bg(border);
         v_flex()
             .id("device-pane")
-            .w(px(320.))
-            .h_full()
-            .p_3()
+            .size_full()
+            .px_3()
+            .pb_3()
             .gap_3()
-            .bg(bg)
-            .border_l_1()
-            .border_color(border)
             .overflow_y_scroll()
             .child(
                 TabBar::new("dev-tabs")

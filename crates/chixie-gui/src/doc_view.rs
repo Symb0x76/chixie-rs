@@ -26,6 +26,9 @@ use crate::state::AppState;
 const GAP: f32 = 24.0;
 /// px per mm that shows paper at roughly its physical size on a 96-dpi screen.
 pub const ZOOM_100: f32 = 96.0 / 25.4;
+/// Zoom limits (px per mm).
+pub const ZOOM_MIN: f32 = 0.4;
+pub const ZOOM_MAX: f32 = 6.0;
 pub const KEY_CONTEXT: &str = "ChiXieEditor";
 
 actions!(
@@ -34,13 +37,51 @@ actions!(
         MoveLeft, MoveRight, MoveUp, MoveDown, SelectLeft, SelectRight, SelectUp, SelectDown,
         WordLeft, WordRight, SelectWordLeft, SelectWordRight, LineStart, LineEnd, SelectLineStart,
         SelectLineEnd, DocStart, DocEnd, Backspace, Delete, BackspaceWord, DeleteWord, Newline,
-        SelectAll, Copy, Cut, Paste, Undo, Redo,
+        SelectAll, Copy, Cut, Paste, Undo, Redo, Save,
     ]
 );
 
-/// Key bindings (Windows/Linux style) scoped to the editor.
+/// Key bindings scoped to the editor: Windows/Linux style, with macOS's own text-navigation and
+/// ⌘ shortcuts on macOS. Save works app-wide. (gpui-pre 0.3.11 has no `secondary-` key prefix.)
 pub fn bind_keys(cx: &mut App) {
     let c = Some(KEY_CONTEXT);
+    cx.bind_keys([KeyBinding::new(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }, Save, None)]);
+    if cfg!(target_os = "macos") {
+        cx.bind_keys([
+            KeyBinding::new("left", MoveLeft, c),
+            KeyBinding::new("right", MoveRight, c),
+            KeyBinding::new("up", MoveUp, c),
+            KeyBinding::new("down", MoveDown, c),
+            KeyBinding::new("shift-left", SelectLeft, c),
+            KeyBinding::new("shift-right", SelectRight, c),
+            KeyBinding::new("shift-up", SelectUp, c),
+            KeyBinding::new("shift-down", SelectDown, c),
+            KeyBinding::new("alt-left", WordLeft, c),
+            KeyBinding::new("alt-right", WordRight, c),
+            KeyBinding::new("alt-shift-left", SelectWordLeft, c),
+            KeyBinding::new("alt-shift-right", SelectWordRight, c),
+            KeyBinding::new("cmd-left", LineStart, c),
+            KeyBinding::new("cmd-right", LineEnd, c),
+            KeyBinding::new("cmd-shift-left", SelectLineStart, c),
+            KeyBinding::new("cmd-shift-right", SelectLineEnd, c),
+            KeyBinding::new("home", LineStart, c),
+            KeyBinding::new("end", LineEnd, c),
+            KeyBinding::new("cmd-up", DocStart, c),
+            KeyBinding::new("cmd-down", DocEnd, c),
+            KeyBinding::new("backspace", Backspace, c),
+            KeyBinding::new("delete", Delete, c),
+            KeyBinding::new("alt-backspace", BackspaceWord, c),
+            KeyBinding::new("alt-delete", DeleteWord, c),
+            KeyBinding::new("enter", Newline, c),
+            KeyBinding::new("cmd-a", SelectAll, c),
+            KeyBinding::new("cmd-c", Copy, c),
+            KeyBinding::new("cmd-x", Cut, c),
+            KeyBinding::new("cmd-v", Paste, c),
+            KeyBinding::new("cmd-z", Undo, c),
+            KeyBinding::new("cmd-shift-z", Redo, c),
+        ]);
+        return;
+    }
     cx.bind_keys([
         KeyBinding::new("left", MoveLeft, c),
         KeyBinding::new("right", MoveRight, c),
@@ -178,7 +219,7 @@ impl DocView {
         self.zoom
     }
     pub fn set_zoom(&mut self, z: f32, cx: &mut Context<Self>) {
-        self.zoom = z.clamp(0.4, 6.0);
+        self.zoom = z.clamp(ZOOM_MIN, ZOOM_MAX);
         cx.notify();
     }
     pub fn caret_page(&self) -> usize {
@@ -430,7 +471,7 @@ impl DocView {
         self.selecting = false;
     }
     fn scroll_zoom(&mut self, e: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if e.modifiers.control {
+        if e.modifiers.secondary(cx) {
             let dy = f32::from(e.delta.pixel_delta(px(16.)).y);
             self.set_zoom(self.zoom * if dy > 0.0 { 1.1 } else { 1.0 / 1.1 }, cx);
             cx.stop_propagation();
@@ -523,7 +564,11 @@ impl Render for DocView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::component::ActiveTheme as _;
         let theme = cx.theme();
-        let desk = theme.muted;
+        let desk = crate::ribbon::chrome(cx).desk;
+        let page_shadow = [
+            BoxShadow { color: hsla(0., 0., 0., 0.10), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false },
+            BoxShadow { color: hsla(0., 0., 0., 0.12), offset: point(px(0.), px(3.)), blur_radius: px(10.), spread_radius: px(0.), inset: false },
+        ];
         let (sel_color, caret_color, guide, missing_color) = (theme.selection, theme.primary, theme.border, theme.danger);
         let settings: &Settings = &cx.global::<AppState>().settings;
         let page = settings.page.clone();
@@ -602,6 +647,8 @@ impl Render for DocView {
                         for k in 0..pages {
                             let o = g.page_origin(k);
                             let paper = Bounds::new(o, size(px(g.page_w), px(g.page_h)));
+                            // Word's sheet: soft drop shadow on the grey desk.
+                            window.paint_drop_shadows(paper, Corners::default(), &page_shadow);
                             window.paint_quad(fill(paper, gpui_kit::white()));
                             let ruled = layout_doc.pages.get(k).is_some_and(|p| !p.guides.is_empty());
                             if !ruled {

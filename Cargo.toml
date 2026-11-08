@@ -30,3 +30,5 @@ async-channel = "2"
 toml = "1"
 directories = "6"
 keyring = "4.2"
+# Font preview PNGs → ink masks. Same crate instance gpui already pulls in.
+image = { version = "0.25.10", default-features = false, features = ["png"] }

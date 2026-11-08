@@ -18,6 +18,8 @@ mod device_params;
 mod doc_view;
 mod fake;
 mod file_ops;
+mod cloud_preview;
+mod font_preview;
 mod fonts;
 mod icons;
 mod login;
@@ -80,12 +82,25 @@ fn main() {
             TemplateStore::builtins()
         });
         let fonts = std::sync::Arc::new(chixie_core::font_store::FontStore::next_to(&settings_path));
-        cx.set_global(AppState { settings, settings_path, session, user: None, active_font: None, templates, templates_path, fonts });
+        cx.set_global(AppState { settings, settings_path, session, user: None, active_font: None, templates, templates_path, fonts, previews: Default::default(), cloud_previews: Default::default() });
 
+        // Word draws its own caption (quick access toolbar, centred title); see `ChiXieApp::title_bar`.
+        // Windows: our own bar and buttons via OS hit-test areas. macOS: system traffic lights
+        // over our bar, which owns dragging. Linux: client-side decorations (our bar, buttons and
+        // resize border) where the compositor allows them, else the system frame.
+        let base = if cfg!(target_os = "windows") {
+            WindowOptions { titlebar: Some(TitlebarOptions { appears_transparent: true, ..Default::default() }), ..Default::default() }
+        } else {
+            gpui_kit::component::TitleBar::window_options()
+        };
+        let mut base = base;
+        let titlebar = base.titlebar.take().unwrap_or_default();
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
-            titlebar: Some(TitlebarOptions { title: Some("赤写 ChiXie".into()), ..Default::default() }),
-            ..Default::default()
+            titlebar: Some(TitlebarOptions { title: Some("赤写 ChiXie".into()), ..titlebar }),
+            window_min_size: Some(size(px(760.), px(480.))),
+            window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
+            ..base
         };
         let (handle, app) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| ChiXieApp::new(events, device, device_events, window, cx)))
             .expect("open window");

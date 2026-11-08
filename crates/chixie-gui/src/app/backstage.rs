@@ -5,7 +5,7 @@
 use chixie_core::session::Command;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::switch::Switch;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, ThemeMode, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -93,7 +93,9 @@ impl ChiXieApp {
                     t.close_backstage(w, cx);
                 }
             }))
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .bg(bg)
             .text_color(fg)
             .child(nav)
@@ -215,14 +217,14 @@ impl ChiXieApp {
         v_flex()
             .gap_4()
             .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("常规"))
-            .child(Switch::new("opt-dark").label("深色模式").checked(dark).on_click(|v: &bool, window, cx| {
+            .child(Checkbox::new("opt-dark").label("深色模式").checked(dark).on_click(|v: &bool, window, cx| {
                 let v = *v;
                 crate::ribbon::set_theme(v, Some(window), cx);
                 let st = cx.global_mut::<AppState>();
                 st.settings.ui.dark = v;
                 st.save_settings();
             }))
-            .child(Switch::new("opt-guides").label("在页面上显示模板格线").checked(show_guides).on_click(cx.listener(|t, v: &bool, _w, cx| {
+            .child(Checkbox::new("opt-guides").label("在页面上显示模板格线").checked(show_guides).on_click(cx.listener(|t, v: &bool, _w, cx| {
                 let v = *v;
                 t.edit_settings(cx, |st| st.settings.ui.show_guides = v);
             })))

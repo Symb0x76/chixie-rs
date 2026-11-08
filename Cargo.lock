@@ -937,6 +937,7 @@ dependencies = [
  "chixie-core",
  "env_logger",
  "gpui-kit",
+ "image",
  "log",
  "serde",
  "serde_json",

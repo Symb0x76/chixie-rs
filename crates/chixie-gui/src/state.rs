@@ -2,6 +2,7 @@
 //! `cx.observe_global::<AppState>` and re-render; mutate it via `cx.global_mut::<AppState>()`
 //! (which notifies observers).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,6 +12,9 @@ use chixie_core::font_store::FontStore;
 use chixie_core::session::SessionHandle;
 use chixie_core::template::{Template, TemplateStore};
 use gpui_kit::Global;
+
+use crate::cloud_preview::CloudPreview;
+use crate::font_preview::FontPreview;
 
 pub struct User {
     pub name: String,
@@ -34,6 +38,10 @@ pub struct AppState {
     /// Downloaded fonts kept on this computer (work without login).
     pub fonts: std::sync::Arc<FontStore>,
     pub templates_path: PathBuf,
+    /// Font picker previews by font id (built from local fonts in the background).
+    pub previews: HashMap<i64, Arc<FontPreview>>,
+    /// Server preview images of fonts that are not downloaded.
+    pub cloud_previews: HashMap<i64, CloudPreview>,
 }
 
 impl Global for AppState {}

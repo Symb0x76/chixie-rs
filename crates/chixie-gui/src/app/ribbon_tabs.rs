@@ -6,7 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::NumberInput;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::select::Select;
-use gpui_kit::component::switch::Switch;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, ThemeMode, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -244,7 +244,7 @@ impl ChiXieApp {
                 "effects",
                 "效果",
                 stack([
-                    Switch::new("jitter")
+                    Checkbox::new("jitter")
                         .small()
                         .label("随机排布（字距 / 行首 / 上下浮动）")
                         .checked(hw.enabled)
@@ -253,7 +253,7 @@ impl ChiXieApp {
                             t.edit_settings(cx, |st| st.settings.style.handwriting.enabled = v);
                         }))
                         .into_any_element(),
-                    Switch::new("base")
+                    Checkbox::new("base")
                         .small()
                         .label("基础变形（胖瘦 / 高矮 / 旋转）")
                         .checked(df.enabled && df.base)
@@ -266,7 +266,7 @@ impl ChiXieApp {
                             });
                         }))
                         .into_any_element(),
-                    Switch::new("shape")
+                    Checkbox::new("shape")
                         .small()
                         .label("字形变形（倾斜 / 笔画扰动）")
                         .checked(df.enabled && df.shape)
@@ -394,7 +394,7 @@ impl ChiXieApp {
                 cx,
                 "show",
                 "显示",
-                stack([Switch::new("guides")
+                stack([Checkbox::new("guides")
                     .small()
                     .label("模板格线")
                     .checked(show_guides)
@@ -409,7 +409,7 @@ impl ChiXieApp {
                 cx,
                 "look",
                 "外观",
-                stack([Switch::new("dark")
+                stack([Checkbox::new("dark")
                     .small()
                     .label("深色模式")
                     .checked(dark)

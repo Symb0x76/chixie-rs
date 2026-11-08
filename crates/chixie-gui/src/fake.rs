@@ -11,7 +11,7 @@ const FIXTURE: &[u8] = include_bytes!("../../chixie-core/tests/fixtures/font_fix
 pub struct FakeBackend;
 
 fn info(id: i64, name: &str) -> FontInfo {
-    FontInfo { id, font_name: name.into(), character_number: 4, default_load_size: None }
+    FontInfo { id, font_name: name.into(), character_number: 4, default_load_size: None, ..Default::default() }
 }
 
 impl Backend for FakeBackend {

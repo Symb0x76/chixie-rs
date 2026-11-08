@@ -11,7 +11,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState, NumberInput};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::switch::Switch;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::component::input::Input;
@@ -437,7 +437,7 @@ impl TemplatesView {
                         h_flex()
                             .gap_3()
                             .child(div().w(px(72.)))
-                            .child(Switch::new("dual").small().label("双线模式").checked(dual_line.is_some()).on_click(cx.listener(
+                            .child(Checkbox::new("dual").small().label("双线模式").checked(dual_line.is_some()).on_click(cx.listener(
                                 |v, on: &bool, _w, cx| {
                                     let on = *on;
                                     v.edit_kind(cx, |k| {
@@ -447,7 +447,7 @@ impl TemplatesView {
                                     })
                                 },
                             )))
-                            .child(Switch::new("dashed").small().label("虚线分隔").checked(dashed).on_click(cx.listener(|v, on: &bool, _w, cx| {
+                            .child(Checkbox::new("dashed").small().label("虚线分隔").checked(dashed).on_click(cx.listener(|v, on: &bool, _w, cx| {
                                 let on = *on;
                                 v.edit_kind(cx, |k| {
                                     if let TemplateKind::Ruled { dashed, .. } = k {
@@ -461,7 +461,7 @@ impl TemplatesView {
                     .child(h_flex().gap_3().child(field("栏数", F::Columns, "栏")).child(field("栏间距", F::ColumnGap, "mm")))
                     .when(columns > 1, |el| {
                         el.child(h_flex().gap_2().child(div().w(px(72.))).child(
-                            Switch::new("divider").small().label("分隔线").checked(divider).on_click(cx.listener(|v, on: &bool, _w, cx| {
+                            Checkbox::new("divider").small().label("分隔线").checked(divider).on_click(cx.listener(|v, on: &bool, _w, cx| {
                                 let on = *on;
                                 v.edit_kind(cx, |k| {
                                     if let TemplateKind::Ruled { divider, .. } = k {
