@@ -4,7 +4,7 @@ Run on the real machine before a milestone that touches devices is called done (
 the table into the milestone's notes, fill in the result and date, and file anything that fails.
 
 **Setup:** Grbl_ESP32 ChiXie board (CH340), USB to the PC, 300 × 300 mm travel, pen holder with
-a pen, A4 paper taped at the origin. Start `sast-writer`, log in only if fonts must download.
+a pen, A4 paper taped at the origin. Start `chixie-rs`, log in only if fonts must download.
 Keep a hand near the power switch for the first run after any device-code change.
 
 | # | Check | How | Expected | Result |

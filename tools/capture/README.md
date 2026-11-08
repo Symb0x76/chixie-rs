@@ -1,19 +1,19 @@
 # ChiXie3 capture harness
 
 Records the exact G-code ChiXie3 streams for a text, with no hardware and no UAC prompt. The
-captures are the reference ("golden") data for SAST Writer's parity checks.
+captures are the reference ("golden") data for chixie-rs's parity checks.
 
 ```powershell
-cargo build -p sast-writer-cli
+cargo build -p chixie-rs-cli
 ./tools/capture/capture.ps1 -Text "你好赤写 A1" -Out captures/harness/ref1.gcode
-./target/debug/sast-writer-cli capture-diff captures/harness/ref1.gcode captures/harness/ref2.gcode
+./target/debug/chixie-rs-cli capture-diff captures/harness/ref1.gcode captures/harness/ref2.gcode
 ```
 
 `captures/` is git-ignored (fonts are account data).
 
 ## How it works
 
-1. `sast-writer-cli fake-grbl <out>` listens on `127.0.0.1:23` like a Grbl_ESP32 Telnet port. It
+1. `chixie-rs-cli fake-grbl <out>` listens on `127.0.0.1:23` like a Grbl_ESP32 Telnet port. It
    records every line, answers `ok` (5 ms apart: ChiXie3 counts one `ok` per socket read and stalls
    when they arrive together) and an Idle status to `?`. It stops at ChiXie3's end marker
    `G90G0 X0Y0`.

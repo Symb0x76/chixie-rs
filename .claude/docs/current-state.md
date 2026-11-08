@@ -38,7 +38,7 @@
   right task pane `device.rs` (port choice 自动/COMx ★, jog pad 0.1/1/10 mm, 抬笔/落笔, 设为原点,
   回原点, 解锁, live state + position, console, job progress), start confirm with extents
   (300 mm travel warning), 换纸 dialog, disconnect toast with page/line.
-  FAKE mode uses `sim.rs` (simulated Grbl; `SAST_WRITER_SIM_DELAY_MS`); AUTOTEST runs the
+  FAKE mode uses `sim.rs` (simulated Grbl; `CHIXIE_RS_SIM_DELAY_MS`); AUTOTEST runs the
   2-page job incl. sheet change → Done.
 - VERIFY on hardware (BOSS): connect COM4 via 自动, jog/pen, full job, pause (head stops),
   stop (pen lifts), USB unplug mid-job → toast + reconnect via 自动.
@@ -108,26 +108,25 @@
   (`[ui-form]` tag). 任务编程/固件烧录/多设备群控 are placeholders (no handler, inert as admin).
   Key conflicts to capture: 之/弓 path-planning meaning, `M3S` servo vs captured `G1G90 Z`,
   `G4 P` dwell after pen-down, 高矮 default 98–102 vs protocol.md.
-- Reimplementation plan (2026-11-08): `docs/reimplementation-plan.md`. Product name **SAST Writer**
-  (rename binaries/app id/data dirs/crates in M0). BOSS decisions:
+- Reimplementation plan (2026-11-08): `docs/reimplementation-plan.md`. Product name **chixie-rs**
+  (published company-wide; it was "SAST Writer" for a few hours on 2026-11-08). BOSS decisions:
   - writing first (Phase 1 = M0–M10, ~27–37 eng-weeks), then plotting/laser (Phase 2), 百宝箱
     tools (Phase 3), users' own fonts (Phase 4: handwriting capture + zi2zi-JiT/DA-Font generation
     → centre-line vectoriser; NO system-font scan);
   - common formats only: documents DOCX (+ customXml part for seed/ids/template), fonts SVG fonts
     (single-line), templates SVG (+ XLSX for tables), settings/profiles TOML, bundles ZIP;
-  - English folder names: `Documents/SAST Writer/Fonts/`, `.../Templates/` (movable, extra folders,
+  - English folder names: `Documents/chixie-rs/Fonts/`, `.../Templates/` (movable, extra folders,
     watched);
   - cloud = fonts + template library + 参数同步, local-first, everything exportable/importable;
   - no AI, no commerce, no `.cdoc`/encrypted ChiXie3 formats; local table detector; internal tool
     (no signing/installers/self-update); Windows/macOS/Linux from day one.
 - **M0 done (2026-11-08), branch `m0-foundations`** (not merged; no git remote yet):
-  - Renamed to SAST Writer: crates `sast-writer-{core,cli,gui}`, binaries `sast-writer` /
-    `sast-writer-cli`, env `SAST_WRITER_{FAKE,AUTOTEST,SIM_DELAY_MS,ACCOUNT,PASSWORD}`, data dir
-    `SAST Writer` (old `chixie-rs` dir moved on first start), keychain service `SAST Writer` (old
-    entry moved on first read). Hardware/ChiXie3 names unchanged.
+  - Naming: crates `chixie-rs-{core,cli,gui}`, binaries `chixie-rs` / `chixie-rs-cli`, env
+    `CHIXIE_RS_{FAKE,AUTOTEST,SIM_DELAY_MS,ACCOUNT,PASSWORD}`, data dir and keychain service
+    `chixie-rs` (unchanged from before, no migration). Hardware/ChiXie3 names unchanged.
   - CI `.github/workflows/ci.yml`: Windows/macOS/Linux build, clippy -D warnings, tests, GUI
     autotest (non-blocking until seen green), debug artifacts. NOT run yet: needs a GitHub remote.
-  - Capture harness `tools/capture/` (`sast-writer-cli fake-grbl`, `capture-diff`,
+  - Capture harness `tools/capture/` (`chixie-rs-cli fake-grbl`, `capture-diff`,
     `capture.ps1`): fresh un-elevated ChiXie3 per run; reproduces protocol.md structure exactly.
     Finding: pasted text varies 0.1–1.3 mm per stroke between identical runs (deform off).
   - Cloud API: `config/font_config` GET shape captured; ChiXie3 has no template-library backend;

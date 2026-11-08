@@ -46,23 +46,23 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      # Scripted GUI run against the fake backend and simulated Grbl (see crates/sast-writer-gui/src/main.rs).
+      # Scripted GUI run against the fake backend and simulated Grbl (see crates/chixie-rs-gui/src/main.rs).
       # Non-blocking until it has passed on each runner once (GPU/display availability differs).
       - name: GUI autotest
         continue-on-error: true
         shell: bash
         env:
-          SAST_WRITER_AUTOTEST: "1"
+          CHIXIE_RS_AUTOTEST: "1"
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; else run=""; fi
-          $run ./target/debug/sast-writer${{ runner.os == 'Windows' && '.exe' || '' }} | tee autotest.log
+          $run ./target/debug/chixie-rs${{ runner.os == 'Windows' && '.exe' || '' }} | tee autotest.log
           grep -q 'AUTOTEST_BACKSTAGE closed=Ok(true)' autotest.log
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: sast-writer-${{ runner.os }}-debug
+          name: chixie-rs-${{ runner.os }}-debug
           path: |
-            target/debug/sast-writer${{ runner.os == 'Windows' && '.exe' || '' }}
-            target/debug/sast-writer-cli${{ runner.os == 'Windows' && '.exe' || '' }}
+            target/debug/chixie-rs${{ runner.os == 'Windows' && '.exe' || '' }}
+            target/debug/chixie-rs-cli${{ runner.os == 'Windows' && '.exe' || '' }}
           if-no-files-found: error

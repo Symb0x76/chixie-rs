@@ -58,8 +58,8 @@ Base host `https://chixie.com.cn/client_api/`. Envelope: `{status, msg, data, pa
   (`FUtil.sync_user_font_config`, statically a POST of the same fields) was **not** triggered by
   setting a default font, by browsing, or by quitting: request body **VERIFY**.
 - **Template library (主页 › 模板): no backend in ChiXie3 3.0.310.** The page never requests anything
-  (with or without the proxy); the "/12" page count is a fixed label in its Designer form. SAST
-  Writer needs new endpoints: see [cloud-api-proposal.md](cloud-api-proposal.md).
+  (with or without the proxy); the "/12" page count is a fixed label in its Designer form.
+  chixie-rs needs new endpoints: see [cloud-api-proposal.md](cloud-api-proposal.md).
 
 ### Font payload format (decrypted, verified)
 

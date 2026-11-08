@@ -3,7 +3,7 @@
   Capture the exact G-code ChiXie3 streams for a text, without hardware.
 
 .DESCRIPTION
-  1. Starts `sast-writer-cli fake-grbl` on 127.0.0.1:23 (a fake Grbl that records every line).
+  1. Starts `chixie-rs-cli fake-grbl` on 127.0.0.1:23 (a fake Grbl that records every line).
   2. Optionally patches ChiXie3's config.ini (backed up and restored afterwards).
   3. Starts a fresh ChiXie3 un-elevated (__COMPAT_LAYER=RunAsInvoker, no UAC prompt).
   4. Connects ChiXie3's wireless device "[自定义] guangku" (127.0.0.1:23, add it once by hand:
@@ -34,12 +34,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path "$PSScriptRoot\..\.."
-$cli = Join-Path $repo 'target\debug\sast-writer-cli.exe'
+$cli = Join-Path $repo 'target\debug\chixie-rs-cli.exe'
 $chixie = Join-Path $env:LOCALAPPDATA 'Programs\ChiXie3\start.exe'
 $ini = Join-Path $env:USERPROFILE 'ChiXie3\conf\config.ini'
 $Out = [IO.Path]::GetFullPath((Join-Path (Get-Location) $Out))
 $shotDir = "$Out.shots"
-if (-not (Test-Path $cli)) { throw "build first: cargo build -p sast-writer-cli" }
+if (-not (Test-Path $cli)) { throw "build first: cargo build -p chixie-rs-cli" }
 if (-not (Test-Path $chixie)) { throw "ChiXie3 not found at $chixie" }
 if (Get-Process start -ErrorAction SilentlyContinue) { throw "close ChiXie3 first" }
 if ($Shots) { New-Item -ItemType Directory -Force $shotDir | Out-Null }

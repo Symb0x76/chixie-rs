@@ -201,7 +201,7 @@ Captures: `captures/{a2_pasted_deform_off,d_base_deform,d_shape_deform7}.gcode` 
 
 ## Page templates (`%USERPROFILE%\ChiXie3\conf\*.cx`, decoded 2026-11-07)
 Python pickles (protocol 4) of `{name: object}`; the objects come from `core.DataModel.*` and carry
-their state as a plain `__dict__`. They are read by `sast_writer_core::chixie3_templates`, a small pickle
+their state as a plain `__dict__`. They are read by `chixie_rs_core::chixie3_templates`, a small pickle
 reader that never executes class references.
 - `note_template.cx` holds `NoteTemplate` objects, which become ruled templates:
   - `page_width`, `page_height` and `margin_top/bottom/left/right`, all in mm (whole mm stored as int);
@@ -260,7 +260,7 @@ reader that never executes class references.
   - `penUp` (int Z);
   - `penDown`, `writeSpeed`, `pauseTime` (strings);
   - `x_plus` / `x_reduce` / `y_plus` / `y_reduce` (`X+`, `X-`, `Y+`, `Y-`).
-- Mapping into chixie-rs (`sast_writer_core::chixie3_devices`):
+- Mapping into chixie-rs (`chixie_rs_core::chixie3_devices`):
   - Drop-down orders, captured from ChiXie3's 参数设置 on 2026-11-07:
     - `firmware`: 0 Grbl, 1 Marlin, 2 ESP32_Grbl, 3 ChiXie_ESP32_Grbl.
     - `deviceType`: 0 步进抬笔写字机, 1 舵机抬笔写字机, 2 电磁铁抬笔写字机, 3 激光雕刻机,
