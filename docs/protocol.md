@@ -168,6 +168,13 @@ residual after it. Single-stroke `1` is collinear, so its sx is unreliable.
 - **Paste vs typed (unexplained, VERIFY):** text pasted with deformation **off** still gets a
   per-glyph axis-aligned scale relative to typed text (sx 0.70–1.05, sy 0.86–1.01, no rotation, exact
   fit). Typed text matched the raw font at scale 1.
+- **Pasted text is not repeatable (2026-11-08, harness):** the same text `你好赤写 A1` pasted into
+  two fresh ChiXie3 sessions with 字符变形 off gives the same structure (21 strokes, identical point
+  counts per stroke) but each stroke differs by 0.1–1.3 mm. The best per-stroke scale ranges
+  0.84–1.23 and leaves up to 1.0 mm residual, so this is independent per-stroke variation, not one
+  scale per glyph. It matches the paste effect above. Typed text still to be checked with the
+  harness. Parity checks must therefore compare structure exactly and shapes statistically.
+  Captures: `captures/harness/ref{1,2}.gcode`, tool: `tools/capture/` (local only).
 
 Captures: `captures/{a2_pasted_deform_off,d_base_deform,d_shape_deform7}.gcode` (local only).
 

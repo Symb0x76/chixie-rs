@@ -1,3 +1,5 @@
+mod fake_grbl;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -145,6 +147,74 @@ enum Cmd {
         #[arg(long)]
         from: Option<PathBuf>,
     },
+    /// Pretend to be a Grbl board on TCP and record every line streamed to it (captures ChiXie3's
+    /// output without hardware; see tools/capture/README.md)
+    FakeGrbl {
+        /// Where the recorded G-code goes
+        out: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:23")]
+        bind: String,
+        /// Stop after this line (ChiXie3 ends every job with it)
+        #[arg(long, default_value = "G90G0 X0Y0")]
+        end: String,
+        /// Give up after this many seconds without traffic
+        #[arg(long, default_value_t = 120)]
+        idle: u64,
+        /// Delay before each `ok` (ChiXie3 stalls when acks arrive back to back)
+        #[arg(long, default_value_t = 5)]
+        ack_delay_ms: u64,
+    },
+    /// Compare two G-code captures stroke by stroke: count, points per stroke and shape. Exit 1 if
+    /// they differ more than --tol (absolute positions are not compared: spacing is random)
+    CaptureDiff {
+        a: PathBuf,
+        b: PathBuf,
+        /// Max per-point deviation in mm after aligning each stroke on its first point
+        #[arg(long, default_value_t = 0.05)]
+        tol: f32,
+        #[arg(long, default_value_t = 2.0)]
+        pen_down_z: f32,
+    },
+}
+
+struct CaptureDiff {
+    point_mismatches: usize,
+    max_dev: f32,
+}
+
+/// Compare strokes pairwise in order. Each stroke is aligned on its first point, so random
+/// character spacing and line offsets don't count; glyph shape and stroke structure do.
+fn capture_diff(a: &[Vec<(f32, f32)>], b: &[Vec<(f32, f32)>]) -> CaptureDiff {
+    let mut d = CaptureDiff { point_mismatches: 0, max_dev: 0.0 };
+    for (sa, sb) in a.iter().zip(b) {
+        if sa.len() != sb.len() {
+            d.point_mismatches += 1;
+            continue;
+        }
+        let (oa, ob) = (sa[0], sb[0]);
+        for (pa, pb) in sa.iter().zip(sb) {
+            let dev = ((pa.0 - oa.0) - (pb.0 - ob.0)).hypot((pa.1 - oa.1) - (pb.1 - ob.1));
+            d.max_dev = d.max_dev.max(dev);
+        }
+    }
+    d
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_diff_ignores_offsets_but_not_shape() {
+        let a = vec![vec![(0.0, 0.0), (1.0, 0.0)], vec![(5.0, 5.0), (5.0, 6.0)]];
+        let shifted = vec![vec![(2.0, 1.0), (3.0, 1.0)], vec![(9.0, 9.0), (9.0, 10.0)]];
+        let d = capture_diff(&a, &shifted);
+        assert_eq!((d.point_mismatches, d.max_dev), (0, 0.0));
+        let bent = vec![vec![(0.0, 0.0), (1.0, 0.5)], vec![(5.0, 5.0)]];
+        let d = capture_diff(&a, &bent);
+        assert_eq!(d.point_mismatches, 1);
+        assert!((d.max_dev - 0.5).abs() < 1e-6);
+    }
 }
 
 fn api_login() -> sast_writer_core::Result<api::Client> {
@@ -305,6 +375,26 @@ fn main() -> sast_writer_core::Result<()> {
                 .join(r"ChiXie3\conf\config.ini"),
             };
             print!("{}", config::import_chixie3(&std::fs::read_to_string(&path)?).to_toml());
+        }
+        Cmd::FakeGrbl { out, bind, end, idle, ack_delay_ms } => {
+            let listener = std::net::TcpListener::bind(&bind)?;
+            eprintln!("fake-grbl: listening on {bind}, recording to {}", out.display());
+            let (why, lines) = fake_grbl::run(&listener, &out, &end, Duration::from_secs(idle), Duration::from_millis(ack_delay_ms))?;
+            eprintln!("fake-grbl: {lines} lines, stopped: {why:?}");
+            if why != fake_grbl::End::Marker {
+                std::process::exit(2);
+            }
+        }
+        Cmd::CaptureDiff { a, b, tol, pen_down_z } => {
+            let sa = calibration::parse_strokes(&std::fs::read_to_string(&a)?, pen_down_z);
+            let sb = calibration::parse_strokes(&std::fs::read_to_string(&b)?, pen_down_z);
+            let d = capture_diff(&sa, &sb);
+            println!("strokes\t{}\t{}", sa.len(), sb.len());
+            println!("point_count_mismatches\t{}", d.point_mismatches);
+            println!("max_shape_dev_mm\t{:.4}", d.max_dev);
+            if sa.len() != sb.len() || d.point_mismatches > 0 || d.max_dev > tol {
+                std::process::exit(1);
+            }
         }
         Cmd::StyleTemplate => {
             let mut s = handwriting::StyleFile::default();
