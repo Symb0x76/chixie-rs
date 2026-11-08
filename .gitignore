@@ -1,2 +1,5 @@
 /target
 /captures
+/docs/chixie3-analysis/tools
+/docs/HANDOFF.md
+*.code-workspace
