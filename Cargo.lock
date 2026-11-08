@@ -900,50 +900,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "chixie-cli"
-version = "0.1.0"
-dependencies = [
- "chixie-core",
- "clap",
- "env_logger",
-]
-
-[[package]]
-name = "chixie-core"
-version = "0.1.0"
-dependencies = [
- "aes 0.8.4",
- "async-channel",
- "base64 0.23.1",
- "cbc 0.1.2",
- "directories",
- "hmac 0.12.1",
- "keyring",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "serialport",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "toml 1.2.0+spec-1.1.0",
-]
-
-[[package]]
-name = "chixie-gui"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "chixie-core",
- "env_logger",
- "gpui-kit",
- "image",
- "log",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6043,6 +5999,50 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "sast-writer-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "sast-writer-core",
+]
+
+[[package]]
+name = "sast-writer-core"
+version = "0.1.0"
+dependencies = [
+ "aes 0.8.4",
+ "async-channel",
+ "base64 0.23.1",
+ "cbc 0.1.2",
+ "directories",
+ "hmac 0.12.1",
+ "keyring",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serialport",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "toml 1.2.0+spec-1.1.0",
+]
+
+[[package]]
+name = "sast-writer-gui"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "env_logger",
+ "gpui-kit",
+ "image",
+ "log",
+ "sast-writer-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

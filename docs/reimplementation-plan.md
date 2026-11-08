@@ -91,27 +91,27 @@ autotest.
 
 ### 2.1 Crates
 
-Split `chixie-core` along the boundaries the features need. Each crate is introduced by the first
+Split `sast-writer-core` along the boundaries the features need. Each crate is introduced by the first
 milestone that needs it, never as a big-bang move.
 
 | Crate | Owns | Introduced |
 |---|---|---|
-| `chixie-doc` | Document model (flows, runs, paragraphs, cells, papers), edit commands + undo, DOCX read/write with the custom XML part, `.chx` v1 migration | M2 |
-| `chixie-font` | font parsing/decrypt, local store, roles + mixing + fallback, glyph clean-ups | M4 (moves `font.rs`, `font_store.rs`) |
-| `chixie-layout` | typesetting (kinsoku, alignment, indent, width classes, grid, cells, overflow), handwriting effects, deformation | M3 (moves `layout.rs`, `handwriting.rs`, `deformation.rs`) |
-| `chixie-template` | template kinds (ruled, grid, table), editor ops, `.cx` / table import, data sources | M7 (moves `template.rs`, `chixie3_templates.rs`) |
-| `chixie-output` | stroke pipeline: transform → order/plan → pen/colour segments → G-code dialects; job description | M6 (moves `gcode.rs`, `calibration.rs`) |
-| `chixie-device` | transports (serial, Telnet, ESP3D HTTP), Grbl streamer, device actor, discovery, firmware dialects (Grbl_ESP32, ChiXie N1) | M1 (moves `transport.rs`, `grbl.rs`, `device.rs`, `esp3d.rs`, `discovery.rs`) |
-| `chixie-cloud` | API client, session, cloud fonts, cloud template library, parameter sync | M4 (moves `api.rs`, `session.rs`, `credentials.rs`) |
-| `chixie-import` | txt/docx/pdf/xlsx, table-frame detection from PDF/images, later DXF/SVG/images | M7–M8 |
-| `chixie-fontgen` | Phase 4: raster → stroke vectoriser, handwriting capture, import of model-generated glyphs | F1 |
-| `chixie-plot` | Phase 2 vector document and tools | P1 |
-| `chixie-gui`, `chixie-cli` | apps | existing |
+| `sast-writer-doc` | Document model (flows, runs, paragraphs, cells, papers), edit commands + undo, DOCX read/write with the custom XML part, `.chx` v1 migration | M2 |
+| `sast-writer-font` | font parsing/decrypt, local store, roles + mixing + fallback, glyph clean-ups | M4 (moves `font.rs`, `font_store.rs`) |
+| `sast-writer-layout` | typesetting (kinsoku, alignment, indent, width classes, grid, cells, overflow), handwriting effects, deformation | M3 (moves `layout.rs`, `handwriting.rs`, `deformation.rs`) |
+| `sast-writer-template` | template kinds (ruled, grid, table), editor ops, `.cx` / table import, data sources | M7 (moves `template.rs`, `chixie3_templates.rs`) |
+| `sast-writer-output` | stroke pipeline: transform → order/plan → pen/colour segments → G-code dialects; job description | M6 (moves `gcode.rs`, `calibration.rs`) |
+| `sast-writer-device` | transports (serial, Telnet, ESP3D HTTP), Grbl streamer, device actor, discovery, firmware dialects (Grbl_ESP32, ChiXie N1) | M1 (moves `transport.rs`, `grbl.rs`, `device.rs`, `esp3d.rs`, `discovery.rs`) |
+| `sast-writer-cloud` | API client, session, cloud fonts, cloud template library, parameter sync | M4 (moves `api.rs`, `session.rs`, `credentials.rs`) |
+| `sast-writer-import` | txt/docx/pdf/xlsx, table-frame detection from PDF/images, later DXF/SVG/images | M7–M8 |
+| `sast-writer-fontgen` | Phase 4: raster → stroke vectoriser, handwriting capture, import of model-generated glyphs | F1 |
+| `sast-writer-plot` | Phase 2 vector document and tools | P1 |
+| `sast-writer-gui`, `sast-writer-cli` | apps | existing |
 
 Rule: the domain crates know nothing about gpui. Everything a view needs comes from the
 domain crates.
 
-### 2.2 Document model (`chixie-doc`, M2)
+### 2.2 Document model (`sast-writer-doc`, M2)
 
 ```
 Document { id, seed, template: TemplateRef, origin: Origin, papers: Vec<Paper>, settings: DocSettings }
@@ -134,7 +134,7 @@ Para     { start, align, first_indent, ... }
 - **Determinism:** the same document + seed + fonts gives byte-identical G-code. Golden tests pin
   this.
 
-### 2.3 Output pipeline (`chixie-output`, M6)
+### 2.3 Output pipeline (`sast-writer-output`, M6)
 
 ```
 layout(doc) → PageStrokes (mm, per char id, per pen colour)
@@ -147,7 +147,7 @@ layout(doc) → PageStrokes (mm, per char id, per pen colour)
 
 The **resume map** makes line-exact break-point resume possible. It is the core of M1/M2.
 
-### 2.4 Device layer (`chixie-device`)
+### 2.4 Device layer (`sast-writer-device`)
 
 - One actor per device, as today. Transports: serial (CH340/GD32/Bluetooth SPP), Telnet, and
   ESP3D HTTP (SD).
@@ -210,14 +210,14 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
 - USB-drop recovery by auto-rescan; finish position (写完位置: origin / custom / stay).
 - 书写此页 and "from page N"; 工作区巡边 (3 pen modes × 2 ranges) and 绘制框架线.
 - Wireless (Telnet) path tested on hardware for the first time (the core exists but is untested).
-- Introduce `chixie-device`.
+- Introduce `sast-writer-device`.
 - **Done when:**
   - fake link drops `ok` → resync without hanging;
   - pulling USB mid-job → reconnect prompt → continue;
   - a 20-page job runs on hardware with only sheet changes (BOSS).
 
 ### M2 Document model v2 + resume (3–4 wk) — spec R2, R3 (model part)
-- `chixie-doc` (§2.2): runs, paragraphs, flows, commands and undo; DOCX as the document format,
+- `sast-writer-doc` (§2.2): runs, paragraphs, flows, commands and undo; DOCX as the document format,
   with migration from today's `.chx`.
 - Resume map (§2.3) and **断点续写**:
   - from the interrupted line;
@@ -239,7 +239,7 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
   one cell).
 - 作文格 word segmentation (`jieba-rs`, verify).
 - Rationality check badge (位置合理性检测) as a status-bar item.
-- Introduce `chixie-layout`.
+- Introduce `sast-writer-layout`.
 - **Done when:**
   - goldens for each alignment and indent;
   - 1,000-character fuzz: no line starts with a closing mark;
@@ -274,7 +274,7 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
   - System-installed fonts (TTF/OTF) are deliberately **not** scanned: they are screen fonts made
     of filled outlines, not pen strokes, and write badly.
 - 导出 / 导入 on font cards (an SVG font file, or several as a ZIP).
-- Introduce `chixie-font` and `chixie-cloud` (fonts first; templates in M7, sync in M10).
+- Introduce `sast-writer-font` and `sast-writer-cloud` (fonts first; templates in M7, sync in M10).
 - **Done when:**
   - a 1,000-character mix ratio is within ±3% of the target;
   - a missing character falls through the chain;
@@ -294,7 +294,7 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
   - the seeded golden is stable.
 
 ### M6 Output options (2–3 wk) — spec R5
-- `chixie-output` pipeline (§2.3): 之/弓 path planning, start-point modes (纸张/框线/自定义 with a
+- `sast-writer-output` pipeline (§2.3): 之/弓 path planning, start-point modes (纸张/框线/自定义 with a
   marker on the page), and axis directions.
 - Page rotation 不旋转 / 奇数页 / 偶数页 / 全部 180°.
 - Pen-up/down per device type (Z, servo `M3S`, stepper lift), pause after pen down.
@@ -309,7 +309,7 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
     capture before shipping.
 
 ### M7 Templates and tables (6–8 wk) — spec R7, the largest milestone
-- `chixie-template`.
+- `sast-writer-template`.
 - Template editor parity: 笔记 columns, dual line, 分隔线/虚线; 作文格 parameters; quick sizes;
   the 书写原点 marker.
 - **Tables:**
@@ -321,7 +321,7 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
     instead of a modal state;
   - batch overflow handling.
 - Import: Excel (`calamine`, verify) with merged cells.
-- **Local table-frame detector** (PDF / image / screenshot → table template), in `chixie-import`:
+- **Local table-frame detector** (PDF / image / screenshot → table template), in `sast-writer-import`:
   1. Vector PDFs first: read the page's line and rectangle drawing operators (`lopdf`, verify)
      → exact segments in mm, no rasterising.
   2. Raster input (images, screenshots, scanned PDFs): grayscale → adaptive threshold →
@@ -365,7 +365,7 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
 - 字体/字号 per selection, 格式刷, character format (colour = pen, strike/underline as ChiXie3 has
   them).
 - Single/double page view; show frame lines, line numbers and page numbers.
-- Import txt/docx/pdf/xlsx into note, grid and table papers (`chixie-import`). No `.cdoc`.
+- Import txt/docx/pdf/xlsx into note, grid and table papers (`sast-writer-import`). No `.cdoc`.
 - **Print:** render pages to PDF (`printpdf`/own, verify) and hand it to the OS print dialog; 打印文字
   vs 打印背景图 (template only) modes.
 - **Done when:**
@@ -426,9 +426,9 @@ signing and self-update dropped). Internal release
 
 | # | Milestone | Scope | Done when |
 |---|---|---|---|
-| P1 | Plot canvas | `chixie-plot` vector model; ribbon tab 绘图与激光; paper types (A4… custom); rulers, grid, snap, select/pan; basic shapes (point, line, polyline, curve, polygon, rectangle, circle, 3-point and centre arcs) with 图形属性 (position, line type, colour); layers (visible, lock, plot) | shape goldens; travel-ordered output |
+| P1 | Plot canvas | `sast-writer-plot` vector model; ribbon tab 绘图与激光; paper types (A4… custom); rulers, grid, snap, select/pan; basic shapes (point, line, polyline, curve, polygon, rectangle, circle, 3-point and centre arcs) with 图形属性 (position, line type, colour); layers (visible, lock, plot) | shape goldens; travel-ordered output |
 | P2 | Imports | SVG (`usvg`), DXF (`dxf` crate; 作为整体导入 / 拆分导入), image → strokes (binarise + centre-line trace or hatch; `vtracer`/own, verify) | DXF/SVG fixtures; chord tolerance ≤ 0.05 mm |
-| P3 | Text on canvas | 文本 / 文本框 / 表格 / 填充文本域 reuse `chixie-layout` | text boxes write identically to the writing mode |
+| P3 | Text on canvas | 文本 / 文本框 / 表格 / 填充文本域 reuse `sast-writer-layout` | text boxes write identically to the writing mode |
 | P4 | Generators | 印章 (seal), 迷宫 (maze); 分形 / 立体字 optional | deterministic by seed |
 | P4b | 插入 into writing pages | 图片 / 形状 / 文本框 / 表格 placed on writing pages reuse the plot items; 公式 / 图表 / 内容块 / 思维导图 stay deferred (P3 in the spec, rarely used) | inserted items plot in page order with the text |
 | P5 | Laser mode | power/speed per layer, `M3`/`M4 S` dialect, fill hatching; safety interlock prompt | fake-link stream; BOSS checks on a laser head if available |
@@ -465,7 +465,7 @@ in one shared raster → centre-line vectoriser (F1).
 
 | # | Milestone | Scope | Done when |
 |---|---|---|---|
-| F1 | Raster → stroke vectoriser | Shared core in `chixie-fontgen`: binarise → thinning (Zhang–Suen) → skeleton graph (endpoints, junctions) → spur pruning and junction repair → polylines → smoothing and simplification (Douglas–Peucker) → **stroke ordering** (CJK heuristics: top-to-bottom, left-to-right, horizontal before vertical, enclosures last) → pen-width estimate and the advance from the glyph box | round-trip test: render every glyph of a known stroke font at pen width → vectorise → Hausdorff distance < 0.3 mm at 10 mm character size on ≥ 95% of glyphs; stroke count within ±1 on ≥ 90% |
+| F1 | Raster → stroke vectoriser | Shared core in `sast-writer-fontgen`: binarise → thinning (Zhang–Suen) → skeleton graph (endpoints, junctions) → spur pruning and junction repair → polylines → smoothing and simplification (Douglas–Peucker) → **stroke ordering** (CJK heuristics: top-to-bottom, left-to-right, horizontal before vertical, enclosures last) → pen-width estimate and the advance from the glyph box | round-trip test: render every glyph of a known stroke font at pen width → vectorise → Hausdorff distance < 0.3 mm at 10 mm character size on ≥ 95% of glyphs; stroke count within ±1 on ≥ 90% |
 | F2 | Personal handwriting capture | (a) **Sample sheet:** a printable 作文格-style template listing ~200–300 characters chosen to cover common components, with 4 corner markers. The user fills it in, then scans or photographs it; perspective correction from the markers → cell crops → 256×256 glyph PNGs. (b) **Direct capture:** write the samples on screen with a pen tablet, which gives exact strokes and stroke order (the best training data and an instant usable partial font). | a phone photo of a filled sheet yields 95% clean crops; direct capture saves strokes and PNGs |
 | F3 | Model-generated full font | Generate the remaining characters (GB2312 6,763, or the 6,900 set the cloud fonts use) in the user's style. Primary: **zi2zi-JiT** + LoRA fine-tune on the user's samples. Candidate alternative: **DA-Font** (few-shot GAN, ACM MM 2025), evaluated side by side. Output glyph PNGs → F1 → stroke font, saved as an SVG font in the font library folder. A review gallery lets the user regenerate or redraw bad characters before saving. | on a held-out set of 100 characters of the user's own handwriting: SSIM/LPIPS reported, and BOSS rates ≥ 80% as acceptable; a full font builds end to end on one consumer GPU |
 

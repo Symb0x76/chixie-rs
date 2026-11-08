@@ -1,0 +1,15 @@
+[package]
+name = "sast-writer-cli"
+description = "SAST Writer command line"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "sast-writer-cli"
+path = "src/main.rs"
+
+[dependencies]
+sast-writer-core.workspace = true
+clap.workspace = true
+env_logger.workspace = true

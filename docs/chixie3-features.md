@@ -247,8 +247,8 @@ but secondary, **P3** niche / vendor-specific / not worth porting soon. Effort: 
 
 ## 3. Features by area
 
-Conventions: "chixie-rs today" names modules under `crates/chixie-core/src` (core) and
-`crates/chixie-gui/src` (GUI). New crates are named explicitly with the reason. The workspace
+Conventions: "chixie-rs today" names modules under `crates/sast-writer-core/src` (core) and
+`crates/sast-writer-gui/src` (GUI). New crates are named explicitly with the reason. The workspace
 already depends on: `serde`, `serde_json`, `toml`, `reqwest` (blocking, rustls), `serialport`,
 `aes`/`cbc`/`hmac`/`sha2`/`base64` (manual Fernet), `async-channel`, `directories`, `keyring`,
 `image` (png), `gpui-kit` (gpui + gpui-component), `clap`, `thiserror`, `log`.

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/chixie-core", "crates/chixie-cli", "crates/chixie-gui"]
+members = ["crates/sast-writer-core", "crates/sast-writer-cli", "crates/sast-writer-gui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.98"
 
 [workspace.dependencies]
-chixie-core = { path = "crates/chixie-core" }
+sast-writer-core = { path = "crates/sast-writer-core" }
 aes = "0.8"
 base64 = "0.23.1"
 cbc = "0.1"
@@ -24,7 +24,7 @@ sha2 = "0.10"
 thiserror = "2.0.21"
 # UI: gpui-kit bundles gpui (gpui-pre =0.3.11), gpui_platform and gpui-component 0.9.0 as
 # one coherent pin. Exact version only; bump deliberately and re-run the gpui identity check
-# (`cargo tree -p chixie-gui -i gpui-pre` must show exactly one instance).
+# (`cargo tree -p sast-writer-gui -i gpui-pre` must show exactly one instance).
 gpui-kit = "=0.9.0"
 async-channel = "2"
 toml = "1"
