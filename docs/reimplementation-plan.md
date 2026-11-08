@@ -184,7 +184,7 @@ The **resume map** makes line-exact break-point resume possible. It is the core 
 There are ten milestones. Each lists its scope, then its **done when** checks. Estimates are
 engineer-weeks for one full-time engineer working with agent help; treat them as ±30%.
 
-### M0 Foundations (1–2 wk)
+### M0 Foundations (1–2 wk) — done 2026-11-08 except CI on macOS/Linux (no remote yet)
 - Commit the current work, then set up the CI matrix (§2.5) and make macOS and Linux build and
   pass the autotest.
 - **Rename to SAST Writer:** window title and about box, binary `sast-writer` (and

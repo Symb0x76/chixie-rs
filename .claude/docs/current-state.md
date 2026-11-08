@@ -38,7 +38,7 @@
   right task pane `device.rs` (port choice 自动/COMx ★, jog pad 0.1/1/10 mm, 抬笔/落笔, 设为原点,
   回原点, 解锁, live state + position, console, job progress), start confirm with extents
   (300 mm travel warning), 换纸 dialog, disconnect toast with page/line.
-  FAKE mode uses `sim.rs` (simulated Grbl; `CHIXIE_GUI_SIM_DELAY_MS`); AUTOTEST runs the
+  FAKE mode uses `sim.rs` (simulated Grbl; `SAST_WRITER_SIM_DELAY_MS`); AUTOTEST runs the
   2-page job incl. sheet change → Done.
 - VERIFY on hardware (BOSS): connect COM4 via 自动, jog/pen, full job, pause (head stops),
   stop (pen lifts), USB unplug mid-job → toast + reconnect via 自动.
@@ -120,6 +120,19 @@
   - cloud = fonts + template library + 参数同步, local-first, everything exportable/importable;
   - no AI, no commerce, no `.cdoc`/encrypted ChiXie3 formats; local table detector; internal tool
     (no signing/installers/self-update); Windows/macOS/Linux from day one.
-- Next: M0 (commit current work, rename to SAST Writer, 3-OS CI, ChiXie3 capture harness, cloud
-  API capture, hardware checklist), then M1.
+- **M0 done (2026-11-08), branch `m0-foundations`** (not merged; no git remote yet):
+  - Renamed to SAST Writer: crates `sast-writer-{core,cli,gui}`, binaries `sast-writer` /
+    `sast-writer-cli`, env `SAST_WRITER_{FAKE,AUTOTEST,SIM_DELAY_MS,ACCOUNT,PASSWORD}`, data dir
+    `SAST Writer` (old `chixie-rs` dir moved on first start), keychain service `SAST Writer` (old
+    entry moved on first read). Hardware/ChiXie3 names unchanged.
+  - CI `.github/workflows/ci.yml`: Windows/macOS/Linux build, clippy -D warnings, tests, GUI
+    autotest (non-blocking until seen green), debug artifacts. NOT run yet: needs a GitHub remote.
+  - Capture harness `tools/capture/` (`sast-writer-cli fake-grbl`, `capture-diff`,
+    `capture.ps1`): fresh un-elevated ChiXie3 per run; reproduces protocol.md structure exactly.
+    Finding: pasted text varies 0.1–1.3 mm per stroke between identical runs (deform off).
+  - Cloud API: `config/font_config` GET shape captured; ChiXie3 has no template-library backend;
+    endpoint proposal in `docs/cloud-api-proposal.md` (needs backend team). `api_log.py` addon.
+  - `docs/hardware-checklist.md` (14 checks).
+- Next: push to GitHub and get CI green on macOS/Linux; backend team reviews the API proposal;
+  then M1 (reliable job loop).
 
