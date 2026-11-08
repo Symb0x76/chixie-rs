@@ -77,6 +77,16 @@ impl FontStore {
         self.write_index(&list)
     }
 
+    /// Correct a saved font's name (it may have been saved before its name was known).
+    /// Returns whether anything changed.
+    pub fn rename(&self, id: i64, name: &str) -> Result<bool> {
+        let mut list = self.list();
+        let Some(f) = list.iter_mut().find(|f| f.id == id && f.name != name) else { return Ok(false) };
+        f.name = name.to_string();
+        self.write_index(&list)?;
+        Ok(true)
+    }
+
     pub fn load(&self, id: i64) -> Result<Font> {
         let bytes = std::fs::read(self.font_path(id)).map_err(|e| Error::Font(format!("本地字体 {id}: {e}")))?;
         Font::from_json(&bytes)
@@ -122,6 +132,10 @@ mod tests {
         s.save(10, "艾玛体 v2", &fixture()).unwrap();
         assert_eq!(s.list().iter().map(|f| (f.id, f.name.as_str())).collect::<Vec<_>>(), vec![(10, "艾玛体 v2"), (11, "其他")]);
         assert!(s.contains(10));
+        assert!(s.rename(11, "田英章").unwrap());
+        assert!(!s.rename(11, "田英章").unwrap(), "same name is a no-op");
+        assert!(!s.rename(99, "无").unwrap(), "unknown id is a no-op");
+        assert_eq!(s.name_of(11).as_deref(), Some("田英章"));
         assert_eq!(s.load(10).unwrap().glyphs.len(), 4);
         s.remove(10).unwrap();
         assert!(!s.contains(10) && s.load(10).is_err());

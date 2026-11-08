@@ -31,13 +31,49 @@ pub struct Login {
     pub expiry_date: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Default)]
 pub struct FontInfo {
     pub id: i64,
     pub font_name: String,
     pub character_number: i64,
     #[serde(default)]
     pub default_load_size: Option<i64>,
+    /// Public PNG of the font's name written in the font (black on white, ~6600×2250),
+    /// e.g. `https://chixie.oss-cn-shanghai.aliyuncs.com/font_preview/font_20.png`. Verified 2026-11-07.
+    #[serde(default)]
+    pub font_preview: Option<String>,
+    #[serde(default)]
+    pub font_description: Option<String>,
+    /// e.g. "中文6900".
+    #[serde(default)]
+    pub type_name: Option<String>,
+    #[serde(default)]
+    pub collection_count: Option<i64>,
+    /// The server sends a JSON array encoded as a string (`"[\"中文字体\", \"手写字体\"]"`).
+    #[serde(default)]
+    pub tags: Option<serde_json::Value>,
+}
+
+impl FontInfo {
+    /// Tags with the redundant "字体" suffix dropped ("手写字体" → "手写").
+    pub fn tag_list(&self) -> Vec<String> {
+        let list: Vec<String> = match &self.tags {
+            Some(serde_json::Value::String(s)) => serde_json::from_str(s).unwrap_or_default(),
+            Some(v @ serde_json::Value::Array(_)) => serde_json::from_value(v.clone()).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        list.into_iter().map(|t| t.strip_suffix("字体").filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or(t)).collect()
+    }
+}
+
+/// GET a public URL (font preview images); no login, no token.
+pub fn fetch_url(url: &str) -> Result<Vec<u8>> {
+    let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).user_agent("chixie-rs").build()?;
+    let resp = http.get(url).send()?;
+    if !resp.status().is_success() {
+        return Err(Error::Api(format!("{url}: HTTP {}", resp.status())));
+    }
+    Ok(resp.bytes()?.to_vec())
 }
 
 pub struct Client {
@@ -134,5 +170,25 @@ impl Client {
         let body = serde_json::json!({ "font_id": font_id, "token": l.token });
         let blob: String = self.post("font/get_font_access", &body)?;
         Font::from_encrypted_with_backup_token(&blob, &l.backup_token)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_info_parses_listing_with_string_tags() {
+        // Shape of a real get_online_fonts item (2026-11-07).
+        let j = r#"{"id":20,"font_name":"最丑字体","character_number":6898,"collection_count":12,
+            "content_preview":null,"font_description":"来源于老版用户录制","permission":1,"type_name":"中文6900",
+            "font_preview":"https://chixie.oss-cn-shanghai.aliyuncs.com/font_preview/font_20.png",
+            "tags":"[\"中文字体\", \"手写字体\", \"潦草字体\"]"}"#;
+        let f: FontInfo = serde_json::from_str(j).unwrap();
+        assert_eq!(f.tag_list(), ["中文", "手写", "潦草"]);
+        assert!(f.font_preview.unwrap().ends_with("font_20.png"));
+        assert_eq!(f.collection_count, Some(12));
+        let bare: FontInfo = serde_json::from_str(r#"{"id":1,"font_name":"x","character_number":1}"#).unwrap();
+        assert!(bare.tag_list().is_empty() && bare.font_preview.is_none());
     }
 }

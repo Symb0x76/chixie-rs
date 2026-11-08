@@ -249,10 +249,10 @@ mod tests {
             if self.heartbeat_fails.load(Ordering::SeqCst) { Err(Error::Api("expired".into())) } else { Ok(()) }
         }
         fn collected_fonts(&self, _page: i64) -> Result<Vec<FontInfo>> {
-            Ok(vec![FontInfo { id: 1, font_name: "艾玛体".into(), character_number: 6899, default_load_size: None }])
+            Ok(vec![FontInfo { id: 1, font_name: "艾玛体".into(), character_number: 6899, default_load_size: None, ..Default::default() }])
         }
         fn online_fonts(&self, page: i64, search: &str) -> Result<Vec<FontInfo>> {
-            Ok(vec![FontInfo { id: page * 100, font_name: format!("{search}{page}"), character_number: 1, default_load_size: None }])
+            Ok(vec![FontInfo { id: page * 100, font_name: format!("{search}{page}"), character_number: 1, default_load_size: None, ..Default::default() }])
         }
         fn font(&self, _id: i64) -> Result<Font> {
             self.font_fetches.fetch_add(1, Ordering::SeqCst);
