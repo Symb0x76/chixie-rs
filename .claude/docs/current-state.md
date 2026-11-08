@@ -71,5 +71,55 @@
   - The last font reloads from disk at start. Logging out keeps the document and the local fonts.
 - Device: 参数设置 tab (profile, ChiXie3 import, $$ machine specs); Stop and Done both park at
   X0 Y0.
-- Next: M6 (i18n, window geometry, app icon, release build).
+- Word 365 "Colorful" chrome (2026-11-07):
+  - custom blue title bar (`appears_transparent`): app mark, quick access toolbar, centred
+    "文档名 - 赤写", 登录/account, own min/max/close via `WindowControlArea` (Windows hit-test);
+    the backstage keeps the bar.
+  - light tab strip with plain 文件 tab; ribbon is a white rounded card; groups split by inset rules.
+  - grey desk with drop-shadowed pages; 设备 task pane with titled header + close.
+  - status bar: hover cells (字体 opens 字体库, 设备 opens the pane), job progress bar, Word-style
+    two-sided zoom slider (100 % in the middle), click % to reset.
+  - palette in `ribbon::chrome` (light + dark). AUTOTEST passes; clippy clean.
+  - VERIFY (BOSS): window drag/snap/resize on the custom caption, maximise/restore icon swap,
+    min size 760×480. Non-Windows: caption buttons rely on Windows hit-test areas only.
+- Follow-up (2026-11-07): every `Switch` → Word-style `Checkbox` (accent via `tokens.primary`);
+  font picker items are `font_preview::FontItem` (own-stroke preview of the name, or a sample
+  when the font lacks a name character; 云端 badge), previews also in 字体库 rows, cached in
+  `AppState.previews` and built off-thread. `字体 #N` cause: the last font is fetched at login
+  before the font lists arrive, so the placeholder was saved; now `FontStore::rename` repairs
+  names whenever a list arrives (BOSS's store has `1 → 字体 #1`; fixed on next login).
+- 字体库 as a 3×3 card grid (2026-11-07): every tab pages by 9 (local/collected client-side,
+  online server-side), no scrolling. Card = preview band + name/action + tags · 字数 · ★收藏;
+  description as tooltip. Un-downloaded fonts: `cloud_preview.rs` fetches `font_preview` PNG
+  off-thread, crops to ink, 120 px ink mask cached in `<fonts>/previews/<id>.png` (~8 KB),
+  tinted per theme; skeleton while loading, "暂无预览" fallback. Font picker uses the same
+  `font_preview::face`. New dep `image` (same instance as gpui's).
+- Fixed: title bar buttons (QAT, 登录) were swallowed as caption drags on Windows — gpui's
+  hit-test reports the Drag area if any ancestor hitbox is hovered; buttons now `.occlude()`.
+- Platform-aware chrome (2026-11-07): Windows keeps the blue caption; macOS/Linux use
+  gpui-component `TitleBar` (traffic lights / CSD buttons, Linux `window_border`, client
+  decorations), a light caption, ⌘ shortcuts and macOS text navigation, keychain wording.
+  Ctrl/⌘+S now saves (was only a tooltip). Windows autotest passes; macOS/Linux NOT compiled
+  here (wayland pkg-config / aws-lc need native toolchains) — check on those machines.
+- ChiXie3 feature spec (2026-11-07): `docs/chixie3-features.md` (140 features, status/priority/
+  effort map, per-feature "recommended implementation", roadmap R1–R12, settings/endpoint
+  appendices, conflicts). Evidence + extraction tools in `docs/chixie3-analysis/`.
+  Designer labels of all 62 forms mined into `docs/chixie3-analysis/ui-labels.md` and merged
+  (`[ui-form]` tag). 任务编程/固件烧录/多设备群控 are placeholders (no handler, inert as admin).
+  Key conflicts to capture: 之/弓 path-planning meaning, `M3S` servo vs captured `G1G90 Z`,
+  `G4 P` dwell after pen-down, 高矮 default 98–102 vs protocol.md.
+- Reimplementation plan (2026-11-08): `docs/reimplementation-plan.md`. Product name **SAST Writer**
+  (rename binaries/app id/data dirs/crates in M0). BOSS decisions:
+  - writing first (Phase 1 = M0–M10, ~27–37 eng-weeks), then plotting/laser (Phase 2), 百宝箱
+    tools (Phase 3), users' own fonts (Phase 4: handwriting capture + zi2zi-JiT/DA-Font generation
+    → centre-line vectoriser; NO system-font scan);
+  - common formats only: documents DOCX (+ customXml part for seed/ids/template), fonts SVG fonts
+    (single-line), templates SVG (+ XLSX for tables), settings/profiles TOML, bundles ZIP;
+  - English folder names: `Documents/SAST Writer/Fonts/`, `.../Templates/` (movable, extra folders,
+    watched);
+  - cloud = fonts + template library + 参数同步, local-first, everything exportable/importable;
+  - no AI, no commerce, no `.cdoc`/encrypted ChiXie3 formats; local table detector; internal tool
+    (no signing/installers/self-update); Windows/macOS/Linux from day one.
+- Next: M0 (commit current work, rename to SAST Writer, 3-OS CI, ChiXie3 capture harness, cloud
+  API capture, hardware checklist), then M1.
 
