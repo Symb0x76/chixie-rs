@@ -256,7 +256,7 @@ impl DevicePanel {
                 self.last_end = Some(outcome.clone());
                 match outcome {
                     JobOutcome::Done => Notice::Info("书写完成".into()),
-                    JobOutcome::Stopped => Notice::Warn(format!("已停止（第 {} 页，第 {line} 行），笔已抬起并回到原点", page + 1)),
+                    JobOutcome::Stopped => Notice::Warn(format!("已停止（第 {} 页，第 {line} 行），笔已抬起", page + 1)),
                     JobOutcome::Failed(e) => Notice::Error(format!("书写出错（第 {} 页，第 {line} 行）：{e}", page + 1)),
                 }
             }

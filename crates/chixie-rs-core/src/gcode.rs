@@ -95,6 +95,46 @@ impl AxisMap {
     }
 }
 
+/// Where the pen parks after a job (写完位置). Coordinates are logical (paper) mm and go through
+/// the axis map, so "left" is left on the paper.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EndPosition {
+    /// 原点: back to the work origin.
+    #[default]
+    Origin,
+    /// 原点左侧: `mm` left of the origin, off the written text so the sheet comes out freely.
+    OriginLeft { mm: f32 },
+    /// 任务结束点: stay where the job ended (pen up).
+    Stay,
+    /// A fixed point.
+    Custom { x: f32, y: f32 },
+}
+
+impl EndPosition {
+    pub const ORIGIN_LEFT_MM: f32 = 20.0;
+
+    /// Machine target of the park move; `None` = stay.
+    pub fn target(self, map: &AxisMap) -> Option<(f32, f32)> {
+        let p = match self {
+            EndPosition::Origin => (0.0, 0.0),
+            EndPosition::OriginLeft { mm } => (-mm, 0.0),
+            EndPosition::Stay => return None,
+            EndPosition::Custom { x, y } => (x, y),
+        };
+        Some(map.apply(p))
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            EndPosition::Origin => "原点".into(),
+            EndPosition::OriginLeft { mm } => format!("原点左侧 {mm:.0} mm"),
+            EndPosition::Stay => "任务结束点".into(),
+            EndPosition::Custom { x, y } => format!("自定义 ({x:.0}, {y:.0})"),
+        }
+    }
+}
+
 /// How the device moves the pen. Defaults match the verified Grbl_ESP32 board.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -119,6 +159,8 @@ pub struct DeviceProfile {
     /// 0.5 s for both stepper and servo types (captured 2026-11-07); ours is a real dwell.
     pub pause_after_down_s: f32,
     pub axis_map: AxisMap,
+    /// 写完位置.
+    pub end_position: EndPosition,
 }
 
 impl Default for DeviceProfile {
@@ -135,6 +177,7 @@ impl Default for DeviceProfile {
             travel_speed: 8000.0,
             pause_after_down_s: 0.0,
             axis_map: AxisMap::default(),
+            end_position: EndPosition::default(),
         }
     }
 }
@@ -199,6 +242,18 @@ pub fn emit_document(doc: &Document, d: &DeviceProfile) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn end_position_round_trips_toml() {
+        for e in [EndPosition::Origin, EndPosition::OriginLeft { mm: 20.0 }, EndPosition::Stay, EndPosition::Custom { x: 1.5, y: -2.0 }] {
+            let p = DeviceProfile { end_position: e, ..Default::default() };
+            let back: DeviceProfile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
+            assert_eq!(back.end_position, e);
+        }
+        // Older settings files have no end_position.
+        let old: DeviceProfile = toml::from_str("write_speed = 2000.0").unwrap();
+        assert_eq!(old.end_position, EndPosition::Origin);
+    }
 
     fn page() -> Page {
         Page { strokes: vec![vec![(10.0, 50.0), (10.0, 48.0)]], ..Default::default() }

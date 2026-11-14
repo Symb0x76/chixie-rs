@@ -11,7 +11,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{ChixieRsApp, Stage, fmt_num};
+use super::{ChixieRsApp, JobScope, Stage, fmt_num};
 use crate::doc_view::{self, DocView};
 use crate::ribbon::{self, big, big_menu, group, small, stack};
 use crate::state::AppState;
@@ -337,7 +337,17 @@ impl ChixieRsApp {
                 "书写",
                 h_flex()
                     .gap_0p5()
-                    .child(big("start", "开始书写", IconName::PencilLine).disabled(!connected || running).on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.start_job(w, cx))))
+                    .child(big("start", "开始书写", IconName::PencilLine).disabled(!connected || running).on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.start_job(JobScope::All, w, cx))))
+                    .child(stack([
+                        small("write-page", "书写此页", IconName::File)
+                            .disabled(!connected || running)
+                            .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.start_job(JobScope::ThisPage, w, cx)))
+                            .into_any_element(),
+                        small("write-from", "从此页起", IconName::ArrowDown)
+                            .disabled(!connected || running)
+                            .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.start_job(JobScope::FromHere, w, cx)))
+                            .into_any_element(),
+                    ]))
                     .child(
                         big(if paused { "resume" } else { "pause" }, if paused { "继续" } else { "暂停" }, if paused { IconName::Play } else { IconName::Pause })
                             .disabled(!running || awaiting.is_some())

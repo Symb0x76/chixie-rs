@@ -43,6 +43,8 @@ pub enum Pen {
 #[derive(Debug, Clone, Default)]
 pub struct Job {
     pub pages: Vec<String>,
+    /// Document page number of `pages[0]` (书写此页 / 从第 N 页), so events name real pages.
+    pub first_page: usize,
 }
 
 #[derive(Debug)]
@@ -113,6 +115,12 @@ pub fn describe(e: &Error) -> String {
 }
 
 const NOT_CONNECTED: &str = "not connected";
+
+/// `0.0` → "0", `-20.0` → "-20", `12.5` → "12.5" (keeps the historical `X0Y0` literal).
+fn fmt_mm(v: f32) -> String {
+    let s = format!("{:.3}", v + 0.0); // + 0.0 turns -0.0 into 0.0
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
 
 pub type BoxLink = Box<dyn Link + Send>;
 pub type Opener = Box<dyn FnMut(&Target) -> Result<(BoxLink, String)> + Send>;
@@ -312,9 +320,10 @@ impl Actor {
         // Drop sheet-change wakeups queued before this job started.
         while let Ok(Command::Stop | Command::NextSheet) = self.rx.try_recv() {}
 
-        let pages = job.pages.len();
-        for (page, body) in job.pages.iter().enumerate() {
-            if page > 0 {
+        let pages = job.first_page + job.pages.len();
+        for (i, body) in job.pages.iter().enumerate() {
+            let page = job.first_page + i;
+            if i > 0 {
                 self.emit(Event::AwaitingSheet { next: page });
                 match self.wait_for_sheet() {
                     Ok(true) => {}
@@ -347,7 +356,7 @@ impl Actor {
                 }
             }
         }
-        // Park: pen up, back to the work origin, so the next sheet can go in.
+        // Park: pen up, then to the 写完位置, so the next sheet can go in.
         let last = pages.saturating_sub(1);
         if let Err(e) = self.park() {
             return self.fail(e, Some(last), None);
@@ -373,10 +382,13 @@ impl Actor {
         }
     }
 
-    /// Pen up, then rapid back to the work origin.
+    /// Pen up, then rapid to the profile's 写完位置 (no move for `Stay`).
     fn park(&mut self) -> Result<()> {
         self.cmd(&self.pen_line(Pen::Up))?;
-        self.cmd("G90G0 X0Y0")
+        match self.profile.end_position.target(&self.profile.axis_map) {
+            Some((x, y)) => self.cmd(&format!("G90G0 X{}Y{}", fmt_mm(x), fmt_mm(y))),
+            None => Ok(()),
+        }
     }
 
     /// Stop = feed hold (already sent by `stream`) → wait for the hold to settle → soft reset
@@ -510,7 +522,7 @@ mod tests {
     fn two_page_job_waits_for_sheet() {
         let (h, ev, fake) = start(Fake::default());
         wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
-        h.send(Command::Run(Job { pages: vec![page(5), page(3)] }));
+        h.send(Command::Run(Job { pages: vec![page(5), page(3)], ..Default::default() }));
         assert_eq!(wait_for(&ev, |e| matches!(e, Event::AwaitingSheet { .. })), Event::AwaitingSheet { next: 1 });
         assert_eq!(fake.lock().unwrap().lines.len(), 1 + 5); // $I + page 0 only
         h.send(Command::NextSheet);
@@ -527,7 +539,7 @@ mod tests {
     fn stop_holds_resets_and_lifts_pen() {
         let (h, ev, fake) = start(Fake { status: "<Hold:0|MPos:0,0,0>".into(), ..Default::default() });
         wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
-        h.send(Command::Run(Job { pages: vec![page(5), page(5)] }));
+        h.send(Command::Run(Job { pages: vec![page(5), page(5)], ..Default::default() }));
         wait_for(&ev, |e| matches!(e, Event::AwaitingSheet { .. }));
         h.stop();
         let end = wait_for(&ev, |e| matches!(e, Event::JobEnded { .. }));
@@ -545,7 +557,7 @@ mod tests {
         // $I is line 1; the link dies once 1 + 40 lines have been written.
         let (h, ev, _fake) = start(Fake { drop_after: Some(41), ..Default::default() });
         wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
-        h.send(Command::Run(Job { pages: vec![page(200)] }));
+        h.send(Command::Run(Job { pages: vec![page(200)], ..Default::default() }));
         match wait_for(&ev, |e| matches!(e, Event::Disconnected { .. })) {
             Event::Disconnected { page, last_line, .. } => {
                 assert_eq!(page, Some(0));
@@ -563,7 +575,7 @@ mod tests {
     fn pause_mid_job_holds_until_resume() {
         let (h, ev, fake) = start_slow(Fake::default(), Duration::from_millis(3));
         wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
-        h.send(Command::Run(Job { pages: vec![page(100)] }));
+        h.send(Command::Run(Job { pages: vec![page(100)], ..Default::default() }));
         wait_for(&ev, |e| matches!(e, Event::Progress { done: 1, .. }));
         h.pause();
         std::thread::sleep(Duration::from_millis(200));
@@ -580,11 +592,49 @@ mod tests {
     }
 
     #[test]
+    fn first_page_offsets_events() {
+        let (h, ev, _fake) = start(Fake::default());
+        wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
+        h.send(Command::Run(Job { pages: vec![page(2), page(2)], first_page: 3 }));
+        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::Progress { .. })), Event::Progress { page: 3, pages: 5, .. }));
+        assert_eq!(wait_for(&ev, |e| matches!(e, Event::AwaitingSheet { .. })), Event::AwaitingSheet { next: 4 });
+        h.send(Command::NextSheet);
+        let end = wait_for(&ev, |e| matches!(e, Event::JobEnded { .. }));
+        assert_eq!(end, Event::JobEnded { outcome: JobOutcome::Done, page: 4, line: 0 });
+        h.send(Command::Shutdown);
+    }
+
+    #[test]
+    fn end_position_controls_park() {
+        use chixie_rs_core::gcode::{AxisMap, DeviceProfile, EndPosition};
+        let cases = [
+            (EndPosition::OriginLeft { mm: 20.0 }, AxisMap::default(), Some("G90G0 X-20Y0")),
+            (EndPosition::OriginLeft { mm: 20.0 }, AxisMap { swap_xy: true, invert_x: false, invert_y: true }, Some("G90G0 X0Y20")),
+            (EndPosition::Custom { x: 12.5, y: 3.0 }, AxisMap::default(), Some("G90G0 X12.5Y3")),
+            (EndPosition::Stay, AxisMap::default(), None),
+        ];
+        for (end, axis_map, want) in cases {
+            let (h, ev, fake) = start(Fake::default());
+            wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
+            h.send(Command::SetProfile(DeviceProfile { end_position: end, axis_map, ..Default::default() }));
+            h.send(Command::Run(Job { pages: vec![page(2)], ..Default::default() }));
+            wait_for(&ev, |e| matches!(e, Event::JobEnded { outcome: JobOutcome::Done, .. }));
+            h.send(Command::Shutdown);
+            let f = fake.lock().unwrap();
+            let last = f.lines.last().unwrap().as_str();
+            match want {
+                Some(w) => assert_eq!(last, w, "{end:?}"),
+                None => assert_eq!(last, "G1G90 Z0 F8000", "{end:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn stale_pause_does_not_hold_next_job() {
         let (h, ev, _fake) = start(Fake::default());
         wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
         h.pause(); // while idle: `!` queued, never sent
-        h.send(Command::Run(Job { pages: vec![page(3)] }));
+        h.send(Command::Run(Job { pages: vec![page(3)], ..Default::default() }));
         wait_for(&ev, |e| matches!(e, Event::JobEnded { outcome: JobOutcome::Done, .. }));
         h.send(Command::Shutdown);
     }

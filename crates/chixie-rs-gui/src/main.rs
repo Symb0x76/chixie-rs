@@ -227,7 +227,7 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChixieRsApp>, cx: &mut App)
         cx.update(|cx| {
             let profile = cx.global::<AppState>().settings.device.profile.clone();
             let pages = app.read(cx).doc.read(cx).document().pages.iter().map(|p| chixie_rs_core::gcode::emit(p, &profile)).collect();
-            device.update(cx, |d, cx| d.run(chixie_rs_device::device::Job { pages }, cx));
+            device.update(cx, |d, cx| d.run(chixie_rs_device::device::Job { pages, first_page: 0 }, cx));
         });
         let mut sheet_prompts = 0;
         for _ in 0..300 {
