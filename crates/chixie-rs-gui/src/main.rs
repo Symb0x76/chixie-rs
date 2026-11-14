@@ -229,12 +229,22 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChixieRsApp>, cx: &mut App)
             let pages = app.read(cx).doc.read(cx).document().pages.iter().map(|p| chixie_rs_core::gcode::emit(p, &profile)).collect();
             device.update(cx, |d, cx| d.run(chixie_rs_device::device::Job { pages, first_page: 0 }, cx));
         });
-        let mut sheet_prompts = 0;
+        let (mut sheet_prompts, mut recoveries) = (0, 0);
         for _ in 0..300 {
             cx.background_executor().timer(pause(100)).await;
             let job = cx.update(|cx| device.read(cx).job);
             match job {
                 None => break,
+                // After a simulated USB drop (CHIXIE_RS_SIM_DROP_AT): re-zero and continue.
+                Some(j) if j.recovered.is_some() => {
+                    recoveries += 1;
+                    cx.update(|cx| {
+                        device.update(cx, |d, cx| {
+                            d.send(chixie_rs_device::device::Command::Zero);
+                            d.resume_job(cx);
+                        })
+                    });
+                }
                 Some(j) if j.awaiting.is_some() => {
                     sheet_prompts += 1;
                     let _ = cx.update_window(handle, |_, window, cx| {
@@ -249,7 +259,7 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChixieRsApp>, cx: &mut App)
         cx.update(|cx| {
             let d = device.read(cx);
             println!(
-                "AUTOTEST_DEVICE connected={connected:?} sheet_prompts={sheet_prompts} outcome={:?} job_running={} status={:?}",
+                "AUTOTEST_DEVICE connected={connected:?} sheet_prompts={sheet_prompts} recoveries={recoveries} outcome={:?} job_running={} status={:?}",
                 d.last_end,
                 d.job.is_some(),
                 d.summary()

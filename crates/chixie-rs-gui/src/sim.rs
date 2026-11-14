@@ -18,11 +18,17 @@ pub struct SimGrbl {
     held: bool,
     alarm: bool,
     delay: Duration,
+    /// Lines executed so far, for the fault knobs below.
+    executed: usize,
+    /// `CHIXIE_RS_SIM_DROP_AT=n`: the link dies after `n` lines (a USB brown-out).
+    drop_at: Option<usize>,
+    /// `CHIXIE_RS_SIM_DROP_OK=n`: the `ok` for line `n` is lost.
+    drop_ok: Option<usize>,
 }
 
 impl SimGrbl {
     fn new(delay: Duration) -> Self {
-        Self { out: VecDeque::new(), queue: VecDeque::new(), pos: [0.0; 2], held: false, alarm: false, delay }
+        Self { out: VecDeque::new(), queue: VecDeque::new(), pos: [0.0; 2], held: false, alarm: false, delay, executed: 0, drop_at: None, drop_ok: None }
     }
 
     fn status(&self) -> String {
@@ -47,6 +53,8 @@ impl SimGrbl {
             for l in ["$100=80.000", "$101=80.000", "$110=12000.000", "$111=12000.000", "$120=3000.000", "$121=3000.000", "$130=300.000", "$131=300.000"] {
                 self.out.push_back(l.into());
             }
+        } else if up == "$G" {
+            self.out.push_back("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]".into());
         } else if up == "$X" {
             self.alarm = false;
         } else if up.starts_with("G92") {
@@ -92,6 +100,9 @@ impl Link for SimGrbl {
     }
 
     fn read_line(&mut self) -> Result<Option<String>> {
+        if self.drop_at.is_some_and(|n| self.executed >= n) {
+            return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into());
+        }
         if let Some(l) = self.out.pop_front() {
             return Ok(Some(l));
         }
@@ -102,8 +113,11 @@ impl Link for SimGrbl {
                 std::thread::sleep(self.delay);
             }
             self.execute(&line);
+            self.executed += 1;
             // `$I` info lines go out before its `ok`.
-            self.out.push_back("ok".into());
+            if self.drop_ok != Some(self.executed) {
+                self.out.push_back("ok".into());
+            }
             return Ok(self.out.pop_front());
         }
         std::thread::sleep(Duration::from_millis(5)); // like a serial read timeout
@@ -111,9 +125,23 @@ impl Link for SimGrbl {
     }
 }
 
-/// Opener that ignores the target and connects to a fresh simulator.
+/// Opener that ignores the target and connects to a fresh simulator. The fault knobs
+/// (`CHIXIE_RS_SIM_DROP_AT`, `CHIXIE_RS_SIM_DROP_OK`) apply to the first connection only; a
+/// reconnect gets a healthy board that has just rebooted (prints its banner).
 pub fn opener(delay: Duration) -> Opener {
-    Box::new(move |_t| Ok((Box::new(SimGrbl::new(delay)) as BoxLink, "模拟设备".into())))
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let (drop_at, drop_ok) = (env("CHIXIE_RS_SIM_DROP_AT"), env("CHIXIE_RS_SIM_DROP_OK"));
+    let mut opens = 0;
+    Box::new(move |_t| {
+        opens += 1;
+        let mut g = SimGrbl::new(delay);
+        if opens == 1 {
+            (g.drop_at, g.drop_ok) = (drop_at, drop_ok);
+        } else if drop_at.is_some() {
+            g.out.push_back("Grbl 1.1h ['$' for help]".into());
+        }
+        Ok((Box::new(g) as BoxLink, "模拟设备".into()))
+    })
 }
 
 #[cfg(test)]

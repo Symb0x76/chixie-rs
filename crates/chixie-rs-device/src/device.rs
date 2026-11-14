@@ -6,9 +6,11 @@
 //! - Pause/Resume/Stop act on a shared [`grbl::Control`] directly. They work while a job is
 //!   blocking inside `grbl::stream`.
 //!
-//! A link I/O error (the CH340 board drops off USB under motor load and comes back on a new COM
-//! number; see memory `chixie-board-usb-drop`) ends the session with `Disconnected` and the last
-//! acknowledged line. There is no auto-resume: reconnecting is the user's call.
+//! A link I/O error mid-job (the CH340 board drops off USB under motor load and comes back on a
+//! new COM number) emits `Disconnected` with the last acknowledged line, then the actor rescans
+//! (`Reconnecting`) and reports `Recovered` with the resume line and whether the board rebooted.
+//! The job continues on `ResumeJob`, after the user re-zeroed if needed. Outside a job, an I/O
+//! error just ends the session.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -25,6 +27,13 @@ use chixie_rs_core::{Error, Result};
 const IDLE_TICK: Duration = Duration::from_millis(50);
 const STATUS_EVERY: Duration = Duration::from_millis(250);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// After a link drop: rescan this often, for this long.
+const RECONNECT_EVERY: Duration = Duration::from_secs(1);
+const RECONNECT_FOR: Duration = Duration::from_secs(60);
+/// Time for a rebooting Grbl_ESP32 to print its banner after the port reopens.
+const BOOT_WAIT: Duration = Duration::from_millis(1500);
+/// Lines a Grbl planner may hold beyond the last ack (Grbl_ESP32 `BLOCK_BUFFER_SIZE`).
+pub const PLANNER_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
@@ -66,6 +75,8 @@ pub enum Command {
     Run(Job),
     /// Next sheet is in place; continue after `AwaitingSheet`.
     NextSheet,
+    /// After `Event::Recovered`: continue the interrupted job.
+    ResumeJob,
     /// Wakes the actor if it is waiting for a sheet; the stop itself is flagged on `Control`.
     Stop,
     Shutdown,
@@ -101,6 +112,11 @@ pub enum Event {
     Machine(MachineSettings),
     /// The stream stalled on lost acknowledgements and recovered by itself.
     Resynced { page: usize, lost: usize },
+    /// The link dropped mid-job; reconnect attempt `attempt` (1 s apart, up to 60 s).
+    Reconnecting { attempt: u32 },
+    /// Back after a drop. The job resumes at `line` of `page` on `Command::ResumeJob`. If
+    /// `rebooted`, coordinates are lost: the user must jog to the paper origin and zero first.
+    Recovered { page: usize, line: usize, rebooted: bool },
 }
 
 /// User-facing (Chinese) text for a device error; Grbl codes come with their meaning.
@@ -115,6 +131,15 @@ pub fn describe(e: &Error) -> String {
 }
 
 const NOT_CONNECTED: &str = "not connected";
+
+/// Where to restart a page after a drop. `acked` lines were acknowledged, but up to
+/// [`PLANNER_DEPTH`] of them may still have been queued, not drawn. Back up past those, then to
+/// the pen-up that precedes the stroke there (`gcode::emit` writes one before every travel), so
+/// the pen comes down only at a stroke start. Redraws at most a few strokes, never skips one.
+pub fn resume_point(lines: &[String], acked: usize, pen_up: &str) -> usize {
+    let surely_drawn = acked.saturating_sub(PLANNER_DEPTH).min(lines.len());
+    lines[..surely_drawn].iter().rposition(|l| l.starts_with(pen_up)).unwrap_or(0)
+}
 
 /// `0.0` → "0", `-20.0` → "-20", `12.5` → "12.5" (keeps the historical `X0Y0` literal).
 fn fmt_mm(v: f32) -> String {
@@ -173,7 +198,7 @@ pub fn spawn(opener: Opener) -> (DeviceHandle, async_channel::Receiver<Event>, J
     let (tx, rx) = mpsc::channel();
     let (ev_tx, ev_rx) = async_channel::unbounded();
     let ctl = Arc::new(Control::default());
-    let actor = Actor { opener, rx, ev: ev_tx, ctl: ctl.clone(), link: None, profile: DeviceProfile::default() };
+    let actor = Actor { opener, rx, ev: ev_tx, ctl: ctl.clone(), link: None, profile: DeviceProfile::default(), target: None, last_mpos: None, quit: false };
     let join = std::thread::Builder::new()
         .name("chixie-device".into())
         .spawn(move || actor.run())
@@ -188,6 +213,12 @@ struct Actor {
     ctl: Arc<Control>,
     link: Option<BoxLink>,
     profile: DeviceProfile,
+    /// Last connect target, reused to reconnect after a drop.
+    target: Option<Target>,
+    /// Last machine position reported during a job (reboot detection).
+    last_mpos: Option<[f32; 3]>,
+    /// Shutdown arrived while a job was recovering.
+    quit: bool,
 }
 
 impl Actor {
@@ -203,6 +234,9 @@ impl Actor {
                 Ok(c) => {
                     if let Err(e) = self.handle(c) {
                         self.fail(e, None, None);
+                    }
+                    if self.quit {
+                        return;
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -273,6 +307,7 @@ impl Actor {
             Command::Connect(t) => {
                 self.link = None;
                 let (link, port) = (self.opener)(&t)?;
+                self.target = Some(t);
                 self.link = Some(link);
                 let info = grbl::command(self.link_mut().as_mut(), "$I", COMMAND_TIMEOUT)?;
                 self.emit(Event::Connected { port, info });
@@ -283,7 +318,7 @@ impl Actor {
                 }
             }
             Command::SetProfile(p) => self.profile = p,
-            Command::NextSheet | Command::Stop => {} // only meaningful inside a job
+            Command::NextSheet | Command::Stop | Command::ResumeJob => {} // only meaningful inside a job
             Command::Shutdown => unreachable!("handled in run"),
             other => {
                 self.require_link()?;
@@ -318,38 +353,57 @@ impl Actor {
     fn run_job(&mut self, job: Job) {
         self.ctl.reset();
         // Drop sheet-change wakeups queued before this job started.
-        while let Ok(Command::Stop | Command::NextSheet) = self.rx.try_recv() {}
+        while let Ok(Command::Stop | Command::NextSheet | Command::ResumeJob) = self.rx.try_recv() {}
+        self.last_mpos = None;
+        self.run_pages(&job, 0, None);
+    }
 
+    /// Stream `job.pages[from..]` with sheet changes in between. `resume = Some(line)` starts page
+    /// `from` at that line (a pen-up, see [`resume_point`]) without a sheet prompt.
+    fn run_pages(&mut self, job: &Job, from: usize, resume: Option<usize>) {
         let pages = job.first_page + job.pages.len();
-        for (i, body) in job.pages.iter().enumerate() {
+        for i in from..job.pages.len() {
             let page = job.first_page + i;
-            if i > 0 {
+            if i > 0 && !(i == from && resume.is_some()) {
                 self.emit(Event::AwaitingSheet { next: page });
                 match self.wait_for_sheet() {
                     Ok(true) => {}
                     Ok(false) => return self.end_stopped(page, 0),
-                    Err(e) => return self.fail(e, Some(page), Some(0)),
+                    Err(e) => return self.recover(job, i, 0, true, e),
                 }
             }
-            let mut acked = 0;
+            let lines: Vec<String> = job.pages[i].lines().filter_map(grbl::clean_line).collect();
+            let total = lines.len();
+            // A resumed page restates absolute mode (custom pen-up commands may not carry G90).
+            let (skip, prelude): (usize, &[&str]) = match resume {
+                Some(s) if i == from => (s.min(total), &["G90"]),
+                _ => (0, &[]),
+            };
+            let mut acked = skip;
+            let mut mpos = None;
             let ev = self.ev.clone();
+            let feed = prelude.iter().copied().chain(lines[skip..].iter().map(String::as_str));
             let link = self.link.as_mut().expect("checked by require_link").as_mut();
-            let r = grbl::stream(link, body.lines(), &self.ctl, |e| {
+            let r = grbl::stream(link, feed, &self.ctl, |e| {
                 let out = match e {
-                    StreamEvent::Progress { done, total } => {
-                        acked = done;
-                        Event::Progress { page, pages, done, total }
+                    StreamEvent::Progress { done, .. } => {
+                        acked = (skip + done).saturating_sub(prelude.len()).max(skip);
+                        Event::Progress { page, pages, done: acked, total }
                     }
-                    StreamEvent::Status(st) => Event::Status(st),
+                    StreamEvent::Status(st) => {
+                        mpos = st.mpos.or(mpos);
+                        Event::Status(st)
+                    }
                     StreamEvent::Message(line) => Event::Log { dir: Dir::Rx, line },
                     StreamEvent::Resynced { lost } => Event::Resynced { page, lost },
                 };
                 let _ = ev.send_blocking(out);
             });
+            self.last_mpos = mpos.or(self.last_mpos);
             match r {
                 Ok(()) => {}
                 Err(Error::Cancelled) => return self.end_stopped(page, acked),
-                Err(e @ (Error::Io(_) | Error::Serial(_))) => return self.fail(e, Some(page), Some(acked)),
+                Err(e @ (Error::Io(_) | Error::Serial(_))) => return self.recover(job, i, acked, false, e),
                 Err(e) => {
                     let line = acked + 1;
                     return self.emit(Event::JobEnded { outcome: JobOutcome::Failed(describe(&e)), page, line });
@@ -362,6 +416,116 @@ impl Actor {
             return self.fail(e, Some(last), None);
         }
         self.emit(Event::JobEnded { outcome: JobOutcome::Done, page: last, line: 0 });
+    }
+
+    /// The link died mid-job (USB brown-out: the CH340 board drops and comes back, often on a
+    /// new COM number). Rescan until it is back, tell the UI where the job will resume and
+    /// whether the board rebooted (coordinates lost → the user re-zeros), keep serving jog / pen /
+    /// 设为原点 commands meanwhile, and continue on `ResumeJob`. `sheet_pending`: the drop came
+    /// while waiting for a sheet change, which is asked again after the resume.
+    fn recover(&mut self, job: &Job, i: usize, acked: usize, sheet_pending: bool, e: Error) {
+        let page = job.first_page + i;
+        self.link = None;
+        self.emit(Event::Disconnected { reason: e.to_string(), page: Some(page), last_line: Some(acked) });
+        let stopped = |a: &Self| a.emit(Event::JobEnded { outcome: JobOutcome::Stopped, page, line: acked });
+        let Some(target) = self.target.clone() else { return stopped(self) };
+
+        let deadline = Instant::now() + RECONNECT_FOR;
+        let mut attempt = 0;
+        let rebooted = loop {
+            if self.ctl.cancel.load(Ordering::SeqCst) {
+                return stopped(self);
+            }
+            match self.rx.recv_timeout(RECONNECT_EVERY) {
+                Ok(Command::Stop | Command::Disconnect) => return stopped(self),
+                Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
+                    self.quit = true;
+                    return stopped(self);
+                }
+                Ok(Command::SetProfile(p)) => self.profile = p,
+                Ok(_) => self.emit(Event::Error("设备正在重新连接，请稍候".into())),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            attempt += 1;
+            self.emit(Event::Reconnecting { attempt });
+            match self.reopen(&target) {
+                Ok(rebooted) => break rebooted,
+                Err(_) if Instant::now() < deadline => {}
+                Err(e) => {
+                    let why = format!("设备断开后未能重新连接（{}）", describe(&e));
+                    return self.emit(Event::JobEnded { outcome: JobOutcome::Failed(why), page, line: acked });
+                }
+            }
+        };
+
+        let lines: Vec<String> = job.pages[i].lines().filter_map(grbl::clean_line).collect();
+        let start = resume_point(&lines, acked, &self.profile.pen_up_cmd());
+        self.emit(Event::Recovered { page, line: start, rebooted });
+        self.ctl.reset();
+        loop {
+            if self.ctl.cancel.load(Ordering::SeqCst) {
+                return self.end_stopped(page, acked);
+            }
+            let r = match self.rx.recv_timeout(STATUS_EVERY) {
+                Ok(Command::ResumeJob) => break,
+                Ok(Command::Stop) => return self.end_stopped(page, acked),
+                Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
+                    self.quit = true;
+                    return stopped(self);
+                }
+                Ok(c @ (Command::Run(_) | Command::NextSheet | Command::Connect(_) | Command::Disconnect)) => {
+                    self.emit(Event::Error(format!("请先继续或停止当前任务：{c:?} 已忽略")));
+                    Ok(())
+                }
+                Ok(c) => self.handle(c),
+                Err(RecvTimeoutError::Timeout) => self.link_mut().write_all(&[realtime::STATUS]).and_then(|()| self.drain()),
+            };
+            match r {
+                Ok(()) => {}
+                Err(e @ (Error::Io(_) | Error::Serial(_))) => return self.recover(job, i, acked, sheet_pending, e),
+                Err(e) => self.emit(Event::Error(describe(&e))),
+            }
+        }
+        self.ctl.reset();
+        self.run_pages(job, i, (!sheet_pending).then_some(start));
+    }
+
+    /// Reopen `target` (a serial port that vanished falls back to auto-detect), let a rebooting
+    /// board finish its banner, identify it, and report whether it rebooted: banner seen, or
+    /// the head reads (0, 0) although the last report before the drop was elsewhere.
+    fn reopen(&mut self, target: &Target) -> Result<bool> {
+        let (link, port) = match (self.opener)(target) {
+            Ok(l) => l,
+            Err(e) => match target {
+                Target::Serial { port: Some(_), baud } => (self.opener)(&Target::Serial { port: None, baud: *baud })?,
+                _ => return Err(e),
+            },
+        };
+        self.link = Some(link);
+        let mut rebooted = false;
+        let quiet_until = Instant::now() + BOOT_WAIT;
+        while Instant::now() < quiet_until {
+            if let Some(l) = self.link_mut().read_line()? {
+                rebooted |= l.starts_with("Grbl ");
+                self.report_line(l);
+            }
+        }
+        let info = grbl::command(self.link_mut().as_mut(), "$I", COMMAND_TIMEOUT)?;
+        rebooted |= info.iter().any(|l| l.starts_with("Grbl "));
+        self.link_mut().write_all(&[realtime::STATUS])?;
+        let until = Instant::now() + Duration::from_millis(500);
+        let mut now_at = None;
+        while now_at.is_none() && Instant::now() < until {
+            if let Some(l) = self.link_mut().read_line()? {
+                now_at = GrblStatus::parse(&l).and_then(|s| s.mpos);
+            }
+        }
+        let near0 = |p: [f32; 3]| p[0].abs() < 0.01 && p[1].abs() < 0.01;
+        if let (Some(now), Some(before)) = (now_at, self.last_mpos) {
+            rebooted |= near0(now) && !near0(before);
+        }
+        self.emit(Event::Connected { port, info });
+        Ok(rebooted)
     }
 
     /// `Ok(true)` on `NextSheet`, `Ok(false)` on stop. Keeps status polling alive meanwhile.
@@ -565,9 +729,9 @@ mod tests {
             }
             _ => unreachable!(),
         }
-        // Actor is still alive and reports the missing link instead of panicking.
+        // Actor is still alive, rescanning, and refuses motion until the link is back.
         h.send(Command::Zero);
-        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::Error(_))), Event::Error(m) if m == "设备未连接"));
+        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::Error(_))), Event::Error(m) if m == "设备正在重新连接，请稍候"));
         h.send(Command::Shutdown);
     }
 
@@ -589,6 +753,93 @@ mod tests {
         assert_eq!(f.lines.len(), 1 + 100 + 2); // + park
         let rt: Vec<u8> = f.realtime.iter().copied().filter(|b| *b != realtime::STATUS).collect();
         assert_eq!(rt, vec![realtime::FEED_HOLD, realtime::CYCLE_START]);
+    }
+
+    /// `n` strokes the way `gcode::emit` writes them: pen-up, travel, pen-down, two moves.
+    fn stroke_page(n: usize) -> String {
+        let mut s = String::from("G1G90 Z0 F8000\n");
+        for i in 0..n {
+            s += &format!("G0 X{i}.000 Y0.000\nG1G90 Z2 F8000\nG1 X{i}.000 Y1.000 F3000\nG1 X{i}.000 Y2.000 F3000\nG1G90 Z0 F8000\n");
+        }
+        s
+    }
+
+    fn lines_of(s: &str) -> Vec<String> {
+        s.lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn resume_point_backs_up_to_a_pen_up() {
+        let l = lines_of(&stroke_page(20)); // 1 + 5 per stroke
+        let up = "G1G90 Z0";
+        assert_eq!(resume_point(&l, 0, up), 0);
+        assert_eq!(resume_point(&l, 10, up), 0, "within the planner depth of the start");
+        // acked 60 → surely drawn up to index 43; pen-ups sit at 0, 5, 10, …, 40, 45.
+        assert_eq!(resume_point(&l, 60, up), 40);
+        assert!(l[40].starts_with(up));
+        assert_eq!(resume_point(&l, 10_000, up), l.len() - 1);
+        // Custom pen commands are matched verbatim.
+        let custom: Vec<String> = ["M3 S0", "G0 X1", "M3 S90", "G1 X2", "M3 S0", "G0 X3", "M3 S90", "G1 X4"].map(String::from).to_vec();
+        assert_eq!(resume_point(&custom, 4 + PLANNER_DEPTH + 1, "M3 S0"), 4);
+    }
+
+    #[test]
+    fn usb_drop_reconnects_and_resumes() {
+        let body = stroke_page(40); // 201 lines
+        // $I is line 1; the link dies once 1 + 80 lines have been written.
+        let (h, ev, fake) = start(Fake { drop_after: Some(81), ..Default::default() });
+        wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
+        h.send(Command::Run(Job { pages: vec![body.clone()], ..Default::default() }));
+        let Event::Disconnected { page: Some(0), last_line: Some(acked), .. } = wait_for(&ev, |e| matches!(e, Event::Disconnected { .. })) else {
+            panic!("expected a mid-job drop")
+        };
+        // Replug: the board rebooted and prints its banner.
+        {
+            let mut f = fake.lock().unwrap();
+            f.drop_after = None;
+            f.replies.push_back("Grbl 1.3a ['$' for help]".into());
+        }
+        let Event::Recovered { page: 0, line, rebooted } = wait_for(&ev, |e| matches!(e, Event::Recovered { .. })) else { unreachable!() };
+        assert!(rebooted);
+        assert_eq!(line, resume_point(&lines_of(&body), acked, "G1G90 Z0"));
+        // The user jogs back and zeros while the job waits; then continues.
+        h.send(Command::Zero);
+        wait_for(&ev, |e| matches!(e, Event::Log { dir: Dir::Tx, line } if line == "G92 X0 Y0"));
+        let sent_before = fake.lock().unwrap().lines.len();
+        h.send(Command::ResumeJob);
+        let end = wait_for(&ev, |e| matches!(e, Event::JobEnded { .. }));
+        assert!(matches!(end, Event::JobEnded { outcome: JobOutcome::Done, page: 0, .. }), "{end:?}");
+        h.send(Command::Shutdown);
+        let f = fake.lock().unwrap();
+        let resumed = &f.lines[sent_before..];
+        let want: Vec<String> = std::iter::once("G90".to_string()).chain(lines_of(&body)[line..].iter().cloned()).collect();
+        assert_eq!(&resumed[..want.len()], &want[..]);
+    }
+
+    #[test]
+    fn usb_glitch_without_reboot_keeps_coordinates() {
+        let status = "<Run|MPos:5.000,7.000,0.000>";
+        let (h, ev, fake) = start_slow(Fake { drop_after: Some(60), status: status.into(), ..Default::default() }, Duration::from_millis(2));
+        wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
+        h.send(Command::Run(Job { pages: vec![stroke_page(40)], ..Default::default() }));
+        wait_for(&ev, |e| matches!(e, Event::Disconnected { .. }));
+        fake.lock().unwrap().drop_after = None; // replugged; the board kept running (no banner)
+        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::Recovered { .. })), Event::Recovered { rebooted: false, .. }));
+        // Same position after reconnecting, but a board that reads (0, 0) would count as rebooted.
+        h.send(Command::ResumeJob);
+        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::JobEnded { .. })), Event::JobEnded { outcome: JobOutcome::Done, .. }));
+        h.send(Command::Shutdown);
+    }
+
+    #[test]
+    fn stop_while_reconnecting_ends_job() {
+        let (h, ev, _fake) = start(Fake { drop_after: Some(20), ..Default::default() });
+        wait_for(&ev, |e| matches!(e, Event::Connected { .. }));
+        h.send(Command::Run(Job { pages: vec![stroke_page(40)], ..Default::default() }));
+        wait_for(&ev, |e| matches!(e, Event::Disconnected { .. }));
+        h.stop();
+        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::JobEnded { .. })), Event::JobEnded { outcome: JobOutcome::Stopped, .. }));
+        h.send(Command::Shutdown);
     }
 
     #[test]
