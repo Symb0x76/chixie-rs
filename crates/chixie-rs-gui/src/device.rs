@@ -4,9 +4,9 @@
 
 use std::collections::VecDeque;
 
-use chixie_rs_core::device::{Command, DeviceHandle, Dir, Event, Job, JobOutcome, Pen, Target};
-use chixie_rs_core::grbl::GrblStatus;
-use chixie_rs_core::transport::{self, PortInfo};
+use chixie_rs_device::device::{Command, DeviceHandle, Dir, Event, Job, JobOutcome, Pen, Target};
+use chixie_rs_device::grbl::GrblStatus;
+use chixie_rs_device::transport::{self, PortInfo};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::tab::{Tab, TabBar};

@@ -11,5 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 chixie-rs-core.workspace = true
+chixie-rs-device.workspace = true
 clap.workspace = true
 env_logger.workspace = true

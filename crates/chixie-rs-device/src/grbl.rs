@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::transport::Link;
-use crate::{Error, Result};
+use chixie_rs_core::{Error, Result};
 
 /// Grbl RX buffer. Board doesn't report it via `$I`; 128 is the safe lower bound for Grbl_ESP32.
 pub const RX_BUFFER_SIZE: usize = 128;
@@ -276,7 +276,7 @@ pub fn stream<'a>(
 pub(crate) mod fake {
     use std::collections::VecDeque;
 
-    use crate::Result;
+    use chixie_rs_core::Result;
     use crate::transport::Link;
 
     /// Answers `ok` per received line (or `error:20` on line `fail_on`), replies to `?` with

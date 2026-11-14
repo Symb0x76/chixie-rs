@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 chixie-rs-core.workspace = true
+chixie-rs-device.workspace = true
 gpui-kit.workspace = true
 async-channel.workspace = true
 env_logger.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "chixie-rs-device"
+description = "chixie-rs device link: transports, Grbl streaming, device actor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chixie-rs-core.workspace = true
+async-channel.workspace = true
+log.workspace = true
+reqwest.workspace = true
+serialport.workspace = true

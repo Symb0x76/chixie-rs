@@ -69,8 +69,8 @@ fn main() {
     };
 
     let delay = std::env::var("CHIXIE_RS_SIM_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(if autotest { 0 } else { 3 });
-    let opener = if fake { sim::opener(Duration::from_millis(delay)) } else { chixie_rs_core::device::default_opener() };
-    let (device, device_events, _device_join) = chixie_rs_core::device::spawn(opener);
+    let opener = if fake { sim::opener(Duration::from_millis(delay)) } else { chixie_rs_device::device::default_opener() };
+    let (device, device_events, _device_join) = chixie_rs_device::device::spawn(opener);
 
     gpui_kit::application().with_assets(icons::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
@@ -227,7 +227,7 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChixieRsApp>, cx: &mut App)
         cx.update(|cx| {
             let profile = cx.global::<AppState>().settings.device.profile.clone();
             let pages = app.read(cx).doc.read(cx).document().pages.iter().map(|p| chixie_rs_core::gcode::emit(p, &profile)).collect();
-            device.update(cx, |d, cx| d.run(chixie_rs_core::device::Job { pages }, cx));
+            device.update(cx, |d, cx| d.run(chixie_rs_device::device::Job { pages }, cx));
         });
         let mut sheet_prompts = 0;
         for _ in 0..300 {

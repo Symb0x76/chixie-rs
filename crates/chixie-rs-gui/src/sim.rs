@@ -6,9 +6,9 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use chixie_rs_core::Result;
-use chixie_rs_core::device::{BoxLink, Opener};
-use chixie_rs_core::grbl::realtime;
-use chixie_rs_core::transport::Link;
+use chixie_rs_device::device::{BoxLink, Opener};
+use chixie_rs_device::grbl::realtime;
+use chixie_rs_device::transport::Link;
 
 pub struct SimGrbl {
     out: VecDeque<String>,

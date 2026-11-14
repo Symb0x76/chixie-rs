@@ -16,10 +16,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::gcode::DeviceProfile;
+use chixie_rs_core::gcode::DeviceProfile;
 use crate::grbl::{self, Control, GrblStatus, MachineSettings, StreamEvent, realtime};
 use crate::transport::{self, Link};
-use crate::{Error, Result};
+use chixie_rs_core::{Error, Result};
 
 /// How long the idle loop waits for a command before polling the link again.
 const IDLE_TICK: Duration = Duration::from_millis(50);

@@ -3,9 +3,9 @@
 //! settings and sent to the device actor at once.
 
 use chixie_rs_core::chixie3_devices;
-use chixie_rs_core::device::{Command, DeviceHandle, Pen};
+use chixie_rs_device::device::{Command, DeviceHandle, Pen};
 use chixie_rs_core::gcode::{DeviceProfile, DeviceType, Firmware};
-use chixie_rs_core::grbl::MachineSettings;
+use chixie_rs_device::grbl::MachineSettings;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};

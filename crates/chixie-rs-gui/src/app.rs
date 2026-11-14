@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chixie_rs_core::config::import_chixie3;
-use chixie_rs_core::device::{DeviceHandle, Event as DevEvent, Job};
+use chixie_rs_device::device::{DeviceHandle, Event as DevEvent, Job};
 use chixie_rs_core::editor::EditDoc;
 use chixie_rs_core::gcode;
 use chixie_rs_core::session::{Command, Event, FontListKind};

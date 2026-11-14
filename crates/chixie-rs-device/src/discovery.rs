@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use reqwest::blocking::Client;
 
-use crate::Result;
+use chixie_rs_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct Device {
