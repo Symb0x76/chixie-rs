@@ -101,6 +101,19 @@ pub enum Event {
     Resynced { page: usize, lost: usize },
 }
 
+/// User-facing (Chinese) text for a device error; Grbl codes come with their meaning.
+pub fn describe(e: &Error) -> String {
+    match e {
+        Error::Grbl { msg, .. } => format!("控制板报错 {msg}"),
+        Error::Alarm(m) => format!("控制板报警 {m}"),
+        Error::Timeout => "设备长时间没有应答".into(),
+        Error::Api(m) if m == NOT_CONNECTED => "设备未连接".into(),
+        other => other.to_string(),
+    }
+}
+
+const NOT_CONNECTED: &str = "not connected";
+
 pub type BoxLink = Box<dyn Link + Send>;
 pub type Opener = Box<dyn FnMut(&Target) -> Result<(BoxLink, String)> + Send>;
 
@@ -212,7 +225,7 @@ impl Actor {
                 self.link = None;
                 self.emit(Event::Disconnected { reason: e.to_string(), page, last_line });
             }
-            other => self.emit(Event::Error(other.to_string())),
+            other => self.emit(Event::Error(describe(&other))),
         }
     }
 
@@ -242,7 +255,7 @@ impl Actor {
 
     fn require_link(&self) -> Result<()> {
         if self.link.is_none() {
-            return Err(Error::Api("not connected".into()));
+            return Err(Error::Api(NOT_CONNECTED.into()));
         }
         Ok(())
     }
@@ -330,7 +343,7 @@ impl Actor {
                 Err(e @ (Error::Io(_) | Error::Serial(_))) => return self.fail(e, Some(page), Some(acked)),
                 Err(e) => {
                     let line = acked + 1;
-                    return self.emit(Event::JobEnded { outcome: JobOutcome::Failed(e.to_string()), page, line });
+                    return self.emit(Event::JobEnded { outcome: JobOutcome::Failed(describe(&e)), page, line });
                 }
             }
         }
@@ -542,7 +555,7 @@ mod tests {
         }
         // Actor is still alive and reports the missing link instead of panicking.
         h.send(Command::Zero);
-        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::Error(_))), Event::Error(m) if m.contains("not connected")));
+        assert!(matches!(wait_for(&ev, |e| matches!(e, Event::Error(_))), Event::Error(m) if m == "设备未连接"));
         h.send(Command::Shutdown);
     }
 

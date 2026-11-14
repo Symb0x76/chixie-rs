@@ -200,12 +200,88 @@ pub fn unlock(link: &mut dyn Link) -> Result<Vec<String>> {
 
 fn check_line(l: &str, line: usize) -> Result<()> {
     if l.to_ascii_lowercase().starts_with("error") {
-        return Err(Error::Grbl { line, msg: l.to_string() });
+        return Err(Error::Grbl { line, msg: explain(l) });
     }
     if l.to_ascii_uppercase().starts_with("ALARM") {
-        return Err(Error::Alarm(l.to_string()));
+        return Err(Error::Alarm(explain(l)));
     }
     Ok(())
+}
+
+/// `error:22` → `error:22 进给速度未设置`; other lines unchanged.
+pub fn explain(l: &str) -> String {
+    let lower = l.trim().to_ascii_lowercase();
+    let code = |p: &str| lower.strip_prefix(p).and_then(|n| n.trim().parse::<u16>().ok());
+    match (code("error:"), code("alarm:")) {
+        (Some(n), _) => format!("{l} {}", error_text(n)),
+        (_, Some(n)) => format!("{l} {}", alarm_text(n)),
+        _ => l.to_string(),
+    }
+}
+
+/// The alarm code of an `ALARM:n` line.
+pub fn alarm_code(l: &str) -> Option<u16> {
+    l.trim().strip_prefix("ALARM:")?.trim().parse().ok()
+}
+
+/// Chinese meaning of a Grbl `error:n` code (Grbl 1.1 numbering).
+pub fn error_text(code: u16) -> &'static str {
+    match code {
+        1 => "缺少指令字母（G 代码由字母加数值组成）",
+        2 => "数值缺失或格式不对",
+        3 => "无法识别的 $ 系统命令",
+        4 => "该数值不能为负数",
+        5 => "回零功能未启用（$22）",
+        6 => "步进脉冲时间不能小于 3 微秒",
+        7 => "控制板设置读取失败，已恢复默认值",
+        8 => "$ 命令只能在设备空闲时使用",
+        9 => "设备处于报警或点动状态，G 代码已锁定，请先解锁",
+        10 => "软限位需要先启用回零",
+        11 => "一行字符太多，已丢弃",
+        12 => "设置值导致步进频率超过上限",
+        13 => "安全门已打开",
+        14 => "启动行太长，无法保存",
+        15 => "点动目标超出机器行程，已忽略",
+        16 => "点动命令格式不对",
+        17 => "激光模式需要 PWM 输出",
+        20 => "不支持的 G 代码指令",
+        21 => "同一行里有多个同组指令",
+        22 => "没有设置进给速度",
+        23 => "该指令需要整数值",
+        24 => "同一行里有多个指令都要用坐标轴",
+        25 => "同一行里有重复的指令字",
+        26 => "指令需要坐标轴，但没有给出",
+        27 => "行号超出范围",
+        28 => "指令缺少必需的参数",
+        29 => "不支持 G59.x 坐标系",
+        30 => "G53 只能和 G0、G1 一起使用",
+        31 => "当前运动模式下有多余的坐标轴",
+        32 => "圆弧指令缺少所在平面的坐标轴",
+        33 => "运动目标无效",
+        34 => "圆弧半径无法计算",
+        35 => "圆弧指令缺少所在平面的偏移量",
+        36 => "行中有未用到的多余参数",
+        37 => "刀长补偿不能用于该轴",
+        38 => "刀具号超出上限",
+        _ => "控制板返回了未知错误",
+    }
+}
+
+/// Chinese meaning of a Grbl `ALARM:n` code.
+pub fn alarm_text(code: u16) -> &'static str {
+    match code {
+        1 => "触发硬限位，位置可能已丢失，建议重新回零",
+        2 => "运动目标超出机器行程（软限位），位置未丢失，解锁即可继续",
+        3 => "运动中被复位，位置可能已丢失",
+        4 => "探针初始状态不对",
+        5 => "探针没有碰到工件",
+        6 => "回零失败：回零过程中被复位",
+        7 => "回零失败：安全门被打开",
+        8 => "回零失败：没能离开限位开关",
+        9 => "回零失败：没有找到限位开关",
+        10 => "回零失败：没有找到第二个限位开关",
+        _ => "控制板报警（未知类型）",
+    }
 }
 
 /// Stream G-code using Grbl character-counting flow control.
@@ -597,6 +673,20 @@ mod tests {
         let mut f = Fake { drop_ok: vec![1, 2, 3, 4], respond: Vec::new(), status: "<Idle|MPos:0,0,0>".into(), ..Default::default() };
         let (r, _) = run_collect(&mut f, 4, &fast_stall());
         assert!(matches!(r, Err(Error::Timeout)), "{r:?}");
+    }
+
+    #[test]
+    fn every_code_has_a_text() {
+        for n in (1..=17).chain(20..=38) {
+            assert_ne!(error_text(n), error_text(0), "error:{n}");
+        }
+        for n in 1..=10 {
+            assert_ne!(alarm_text(n), alarm_text(0), "ALARM:{n}");
+        }
+        assert_eq!(explain("error:22"), "error:22 没有设置进给速度");
+        assert_eq!(explain("ALARM:2"), format!("ALARM:2 {}", alarm_text(2)));
+        assert_eq!(explain("ok"), "ok");
+        assert_eq!(alarm_code("ALARM:9"), Some(9));
     }
 
     #[test]

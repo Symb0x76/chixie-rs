@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 
 use chixie_rs_device::device::{Command, DeviceHandle, Dir, Event, Job, JobOutcome, Pen, Target};
-use chixie_rs_device::grbl::GrblStatus;
+use chixie_rs_device::grbl::{self, GrblStatus};
 use chixie_rs_device::transport::{self, PortInfo};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -46,6 +46,8 @@ pub enum Notice {
     Warn(String),
     Error(String),
     AwaitingSheet(usize),
+    /// The board entered an alarm: toast with a 解锁 action.
+    Alarm(String),
 }
 
 pub struct DevicePanel {
@@ -65,6 +67,9 @@ pub struct DevicePanel {
     /// 0 = 连接与控制, 1 = 参数设置.
     pub tab: usize,
     pub params: Entity<DeviceParams>,
+    /// In an alarm episode (toast already shown), and the last `ALARM:n` text seen.
+    alarm: bool,
+    last_alarm: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -99,6 +104,8 @@ impl DevicePanel {
             console,
             tab: 0,
             params,
+            alarm: false,
+            last_alarm: None,
             _subs: vec![sub, obs],
         };
         this.refresh_ports(cx);
@@ -211,10 +218,24 @@ impl DevicePanel {
                 }
             }
             Event::Status(s) => {
+                let alarm = s.state.starts_with("Alarm");
                 self.status = Some(s);
-                Notice::None
+                if alarm == self.alarm {
+                    Notice::None
+                } else {
+                    self.alarm = alarm;
+                    let why = self.last_alarm.take();
+                    match why {
+                        _ if !alarm => Notice::None,
+                        Some(w) => Notice::Alarm(format!("设备报警：{w}")),
+                        None => Notice::Alarm("设备处于报警状态，需要解锁后才能运动".into()),
+                    }
+                }
             }
             Event::Log { dir, line } => {
+                if dir == Dir::Rx && grbl::alarm_code(&line).is_some() {
+                    self.last_alarm = Some(grbl::explain(&line));
+                }
                 self.push_log(dir, line);
                 Notice::None
             }

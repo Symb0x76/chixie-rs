@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chixie_rs_core::config::import_chixie3;
-use chixie_rs_device::device::{DeviceHandle, Event as DevEvent, Job};
+use chixie_rs_device::device::{Command as DevCommand, DeviceHandle, Event as DevEvent, Job};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use chixie_rs_core::editor::EditDoc;
 use chixie_rs_core::gcode;
 use chixie_rs_core::session::{Command, Event, FontListKind};
@@ -651,6 +652,16 @@ impl ChixieRsApp {
             Notice::Info(m) => window.push_notification(Notification::info(m), cx),
             Notice::Warn(m) => window.push_notification(Notification::warning(m), cx),
             Notice::Error(m) => window.push_notification(Notification::error(m), cx),
+            Notice::Alarm(m) => {
+                let device = self.device.clone();
+                let n = Notification::warning(m).action(move |_, _, _| {
+                    let device = device.clone();
+                    Button::new("alarm-unlock").small().primary().label("解锁").on_click(move |_, _w, cx| {
+                        device.read(cx).send(DevCommand::Unlock);
+                    })
+                });
+                window.push_notification(n, cx);
+            }
             Notice::AwaitingSheet(next) => {
                 let device = self.device.clone();
                 window.open_alert_dialog(cx, move |a, _w, _cx| {
