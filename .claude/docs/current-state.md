@@ -133,7 +133,7 @@
     endpoint proposal in `docs/cloud-api-proposal.md` (needs backend team). `api_log.py` addon.
   - `docs/hardware-checklist.md` (14 checks).
 - M0 merged to master (`a16c02c`), CI green on all three OSes.
-- **M1 code done (2026-11-14), branch `m1-job-loop`** (not merged):
+- **M1 code done (2026-11-14), merged to master (`cc759b6`) before the hardware run:**
   - New crate `chixie-rs-device` (transport, grbl, device actor, esp3d, discovery, job).
     `DEFAULT_BAUD` lives in core `config`.
   - Stall fix: status replies used to reset the silence timer, so a lost `ok` hung forever. Now:
@@ -151,5 +151,5 @@
     `AUTOTEST_DEVICE … recoveries=` and `AUTOTEST_PATROL`.
 - Open: hardware checklist #1–#15 (BOSS), especially Telnet (#12, #15), the 20-page job (#14),
   and whether a real USB drop reboots the board (decides how often #11 needs a re-zero).
-- Next: BOSS hardware run → merge `m1-job-loop` → M2 (document model v2 + resume).
+- Next: BOSS hardware run (fixes go straight on master) → M2 (document model v2 + resume).
 
