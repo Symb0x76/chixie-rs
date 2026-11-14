@@ -132,6 +132,24 @@
   - Cloud API: `config/font_config` GET shape captured; ChiXie3 has no template-library backend;
     endpoint proposal in `docs/cloud-api-proposal.md` (needs backend team). `api_log.py` addon.
   - `docs/hardware-checklist.md` (14 checks).
-- Next: push to GitHub and get CI green on macOS/Linux; backend team reviews the API proposal;
-  then M1 (reliable job loop).
+- M0 merged to master (`a16c02c`), CI green on all three OSes.
+- **M1 code done (2026-11-14), branch `m1-job-loop`** (not merged):
+  - New crate `chixie-rs-device` (transport, grbl, device actor, esp3d, discovery, job).
+    `DEFAULT_BAUD` lives in core `config`.
+  - Stall fix: status replies used to reset the silence timer, so a lost `ok` hung forever. Now:
+    no ack for 5 s + fresh `Idle` → resync (via `Bf:` or a `$G` marker), `Event::Resynced` toast.
+  - Grbl error/alarm texts in Chinese (`grbl::error_text` / `alarm_text`); alarm toast with 解锁.
+  - `Job.first_page`; ribbon 书写此页 / 从此页起 (caret page); `DeviceProfile.end_position`
+    (写完位置: origin / origin-left 20 mm / stay / custom, through the axis map).
+  - USB-drop recovery (BOSS decision: re-zero, then resume from a stroke): actor rescans 60 s,
+    detects reboot (banner, or (0,0) after elsewhere), `Recovered { line, rebooted }`; resume line =
+    pen-up ≥ 16 lines (planner depth) before the last ack; jog / 设为原点 work while waiting;
+    a drop during the sheet prompt re-asks for the sheet.
+  - 巡边 (3 modes × written/template area) and 绘制框架线 (merged, boustrophedon, dashes).
+  - Auto-connect (`DeviceSettings.auto_connect`, 2 s poll, retries only when the port set changes).
+  - Sim knobs `CHIXIE_RS_SIM_DROP_AT`, `CHIXIE_RS_SIM_DROP_OK`; autotest prints
+    `AUTOTEST_DEVICE … recoveries=` and `AUTOTEST_PATROL`.
+- Open: hardware checklist #1–#15 (BOSS), especially Telnet (#12, #15), the 20-page job (#14),
+  and whether a real USB drop reboots the board (decides how often #11 needs a re-zero).
+- Next: BOSS hardware run → merge `m1-job-loop` → M2 (document model v2 + resume).
 

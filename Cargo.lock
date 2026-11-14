@@ -904,6 +904,7 @@ name = "chixie-rs-cli"
 version = "0.1.0"
 dependencies = [
  "chixie-rs-core",
+ "chixie-rs-device",
  "clap",
  "env_logger",
 ]
@@ -930,11 +931,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "chixie-rs-device"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "chixie-rs-core",
+ "log",
+ "reqwest",
+ "serialport",
+]
+
+[[package]]
 name = "chixie-rs-gui"
 version = "0.1.0"
 dependencies = [
  "async-channel",
  "chixie-rs-core",
+ "chixie-rs-device",
  "env_logger",
  "gpui-kit",
  "image",

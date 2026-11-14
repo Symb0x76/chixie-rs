@@ -14,6 +14,9 @@ use crate::gcode::DeviceProfile;
 use crate::handwriting::{Span, StyleFile};
 use crate::{Error, Result};
 
+/// Verified on the Grbl_ESP32 1.3a board (CH340), 2026-11-06.
+pub const DEFAULT_BAUD: u32 = 115_200;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -33,6 +36,8 @@ pub struct DeviceSettings {
     pub baud: u32,
     pub last_port: Option<String>,
     pub last_ip: Option<String>,
+    /// Connect by itself when a ChiXie USB board (or `last_port`) appears.
+    pub auto_connect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,7 +67,7 @@ pub struct UiSettings {
 
 impl Default for DeviceSettings {
     fn default() -> Self {
-        Self { profile: DeviceProfile::default(), baud: crate::transport::DEFAULT_BAUD, last_port: None, last_ip: None }
+        Self { profile: DeviceProfile::default(), baud: DEFAULT_BAUD, last_port: None, last_ip: None, auto_connect: true }
     }
 }
 

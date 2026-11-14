@@ -120,13 +120,7 @@ impl Document {
     /// Nearest caret index on line `li` for x (mm).
     pub fn index_on_line(&self, li: usize, x: f32) -> usize {
         let l = self.lines[li];
-        for k in l.start..l.end {
-            let b = &self.boxes[k];
-            if x < (b.x0 + b.x1) / 2.0 {
-                return k;
-            }
-        }
-        l.end
+        self.boxes[l.start..l.end].iter().position(|b| x < (b.x0 + b.x1) / 2.0).map_or(l.end, |k| l.start + k)
     }
 
     /// Caret index for a point on `page` (mm): the line under y (or the nearest), then nearest x.

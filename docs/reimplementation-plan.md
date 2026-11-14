@@ -185,7 +185,7 @@ The **resume map** makes line-exact break-point resume possible. It is the core 
 There are ten milestones. Each lists its scope, then its **done when** checks. Estimates are
 engineer-weeks for one full-time engineer working with agent help; treat them as ±30%.
 
-### M0 Foundations (1–2 wk) — done 2026-11-08 except CI on macOS/Linux (no remote yet)
+### M0 Foundations (1–2 wk) — done 2026-11-08 (CI green on Windows, macOS and Linux)
 - Commit the current work, then set up the CI matrix (§2.5) and make macOS and Linux build and
   pass the autotest.
 - **Naming:** window title and about box `chixie-rs`, binaries `chixie-rs` and `chixie-rs-cli`,
@@ -204,7 +204,10 @@ engineer-weeks for one full-time engineer working with agent help; treat them as
 - **Done when:** CI is green on 3 OSes; the harness reproduces the existing protocol.md captures;
   the template and font_config APIs are documented (or the replacement endpoints agreed).
 
-### M1 Reliable job loop (2–3 wk) — spec R1
+### M1 Reliable job loop (2–3 wk) — spec R1 — code done 2026-11-14 (branch `m1-job-loop`); hardware checks pending
+- Status: all items below are implemented and pass fake-link tests and the GUI autotest
+  (`CHIXIE_RS_SIM_DROP_AT` / `CHIXIE_RS_SIM_DROP_OK`). The Telnet path and the 20-page job wait for
+  BOSS's run of `docs/hardware-checklist.md` (#1–#15).
 - Auto-connect; Grbl error and alarm texts translated with an unlock action; stall detection and
   resync.
 - USB-drop recovery by auto-rescan; finish position (写完位置: origin / custom / stay).

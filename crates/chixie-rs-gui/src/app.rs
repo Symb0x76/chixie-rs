@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chixie_rs_core::config::import_chixie3;
-use chixie_rs_core::device::{DeviceHandle, Event as DevEvent, Job};
+use chixie_rs_device::device::{Command as DevCommand, DeviceHandle, Event as DevEvent, Job};
+use chixie_rs_device::job::{self, PatrolMode};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use chixie_rs_core::editor::EditDoc;
 use chixie_rs_core::gcode;
 use chixie_rs_core::session::{Command, Event, FontListKind};
@@ -41,6 +43,24 @@ pub const TAB_DEVICE: usize = 3;
 const DRAFT_EVERY: Duration = Duration::from_secs(2);
 /// Plotter travel on the verified board ($130/$131 = 300 mm).
 const TRAVEL_MM: f32 = 300.0;
+
+/// 工作区巡边 / 绘制框架线 on the caret's page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageTool {
+    /// Mode, and range: `true` = 模板框线区域, `false` = 实际书写区域.
+    Patrol(PatrolMode, bool),
+    Ruling,
+}
+
+/// Which pages a writing job covers; "here" is the page holding the caret.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JobScope {
+    All,
+    /// 书写此页.
+    ThisPage,
+    /// 从此页起.
+    FromHere,
+}
 
 pub struct ChixieRsApp {
     pub tab: usize,
@@ -602,16 +622,80 @@ impl ChixieRsApp {
 
     // ---- device ----
 
-    /// Confirm extents, then stream every page (sheet change prompts in between).
-    fn start_job(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Patrol (pen up: straight away; it leaves no mark) or draw the ruling (confirmed first).
+    pub(crate) fn start_tool(&mut self, tool: PageTool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.device.read(cx).busy() {
+            window.push_notification(Notification::warning("当前有书写任务正在进行中，请先结束任务"), cx);
+            return;
+        }
         let doc = self.doc.read(cx).document();
-        if doc.stroke_count() == 0 {
-            window.push_notification(Notification::warning("没有可书写的笔画（请先选择字体并输入文字）"), cx);
+        let here = self.doc.read(cx).caret_page().min(doc.pages.len().saturating_sub(1));
+        let Some(page) = doc.pages.get(here) else { return };
+        let profile = cx.global::<AppState>().settings.device.profile.clone();
+        let (gcode, title) = match tool {
+            PageTool::Patrol(mode, template) => {
+                let area = if template { job::template_area(page) } else { job::written_area(page) };
+                let Some(r) = area else {
+                    let msg = if template { "该页没有模板框线，无法巡边" } else { "没有书写内容，无法巡边" };
+                    window.push_notification(Notification::warning(msg), cx);
+                    return;
+                };
+                (job::patrol(r, mode, &profile), (mode != PatrolMode::Up).then_some(format!("是否开始{}？（请确保已经设置过原点）", mode.label())))
+            }
+            PageTool::Ruling => {
+                if page.guides.is_empty() {
+                    window.push_notification(Notification::warning("该页没有模板框线可绘制"), cx);
+                    return;
+                }
+                (job::ruling(&page.guides, &profile), Some("是否开始绘制页面框架线？".to_string()))
+            }
+        };
+        self.show_pane = true;
+        let job = Job { pages: vec![gcode], first_page: here };
+        let Some(title) = title else {
+            self.device.update(cx, |d, cx| d.run(job, cx));
+            return;
+        };
+        let device = self.device.clone();
+        window.open_alert_dialog(cx, move |a, _w, _cx| {
+            let (device, job) = (device.clone(), job.clone());
+            a.title(title.clone()).description("笔会落在纸上。请确认纸张和原点。").confirm().ok_text("开始").on_ok(move |_, _w, cx| {
+                device.update(cx, |d, cx| d.run(job.clone(), cx));
+                true
+            })
+        });
+    }
+
+    /// Confirm extents, then stream the chosen pages (sheet change prompts in between).
+    pub(crate) fn start_job(&mut self, scope: JobScope, window: &mut Window, cx: &mut Context<Self>) {
+        if self.device.read(cx).busy() {
+            window.push_notification(Notification::warning("当前有书写任务正在进行中，请先结束任务"), cx);
+            return;
+        }
+        let doc = self.doc.read(cx).document();
+        let here = self.doc.read(cx).caret_page().min(doc.pages.len().saturating_sub(1));
+        let (first, count) = match scope {
+            JobScope::All => (0, doc.pages.len()),
+            JobScope::ThisPage => (here, 1),
+            JobScope::FromHere => (here, doc.pages.len() - here),
+        };
+        let chosen = &doc.pages[first..first + count];
+        let strokes: usize = chosen.iter().map(|p| p.strokes.len()).sum();
+        if strokes == 0 {
+            let msg = if scope == JobScope::ThisPage { "该页没有书写内容" } else { "没有可书写的笔画（请先选择字体并输入文字）" };
+            window.push_notification(Notification::warning(msg), cx);
             return;
         }
         let profile = cx.global::<AppState>().settings.device.profile.clone();
-        let pages: Vec<String> = doc.pages.iter().map(|p| gcode::emit(p, &profile)).collect();
-        let (w, h) = doc.bounds().map(|(x0, y0, x1, y1)| (x1 - x0, y1 - y0)).unwrap_or_default();
+        let pages: Vec<String> = chosen.iter().map(|p| gcode::emit(p, &profile)).collect();
+        let pts = || chosen.iter().flat_map(|p| p.strokes.iter().flatten());
+        let (w, h) = match pts().next() {
+            Some(&(x, y)) => {
+                let (x0, y0, x1, y1) = pts().fold((x, y, x, y), |(a, b, c, d), &(x, y)| (a.min(x), b.min(y), c.max(x), d.max(y)));
+                (x1 - x0, y1 - y0)
+            }
+            None => (0.0, 0.0),
+        };
         // The machine's own limits ($$) when known, else the verified board's.
         let machine = self.device.read(cx).params.read(cx).machine.clone();
         let (tx, ty) = machine.as_ref().and_then(|m| m.travel).unwrap_or((TRAVEL_MM, TRAVEL_MM));
@@ -627,18 +711,23 @@ impl ChixieRsApp {
             window.push_notification(Notification::error("当前固件设置为 Marlin，暂不支持书写（设备 › 参数设置）"), cx);
             return;
         }
+        let which = match scope {
+            JobScope::All => format!("共 {count} 页"),
+            JobScope::ThisPage => format!("第 {} 页", first + 1),
+            JobScope::FromHere => format!("第 {}–{} 页", first + 1, first + count),
+        };
         let desc = format!(
-            "共 {} 页（{} 笔），书写范围 {w:.1} × {h:.1} mm。{warn}请确认纸张已放好、笔已装好，起点为当前原点；写完后笔会回到原点。",
-            pages.len(),
-            doc.stroke_count(),
+            "{which}（{strokes} 笔），书写范围 {w:.1} × {h:.1} mm。{warn}请确认纸张已放好、笔已装好，起点为当前原点；写完后笔会停在{}。",
+            profile.end_position.label(),
         );
+        let title = if scope == JobScope::ThisPage { format!("是否立即书写第 {} 页？", first + 1) } else { "开始书写？".into() };
         self.show_pane = true;
         let device = self.device.clone();
         window.open_alert_dialog(cx, move |a, _w, _cx| {
             let device = device.clone();
             let pages = pages.clone();
-            a.title("开始书写？").description(desc.clone()).confirm().ok_text("开始").on_ok(move |_, _w, cx| {
-                device.update(cx, |d, cx| d.run(Job { pages: pages.clone() }, cx));
+            a.title(title.clone()).description(desc.clone()).confirm().ok_text("开始").on_ok(move |_, _w, cx| {
+                device.update(cx, |d, cx| d.run(Job { pages: pages.clone(), first_page: first }, cx));
                 true
             })
         });
@@ -651,6 +740,16 @@ impl ChixieRsApp {
             Notice::Info(m) => window.push_notification(Notification::info(m), cx),
             Notice::Warn(m) => window.push_notification(Notification::warning(m), cx),
             Notice::Error(m) => window.push_notification(Notification::error(m), cx),
+            Notice::Alarm(m) => {
+                let device = self.device.clone();
+                let n = Notification::warning(m).action(move |_, _, _| {
+                    let device = device.clone();
+                    Button::new("alarm-unlock").small().primary().label("解锁").on_click(move |_, _w, cx| {
+                        device.read(cx).send(DevCommand::Unlock);
+                    })
+                });
+                window.push_notification(n, cx);
+            }
             Notice::AwaitingSheet(next) => {
                 let device = self.device.clone();
                 window.open_alert_dialog(cx, move |a, _w, _cx| {

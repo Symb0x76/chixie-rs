@@ -3,9 +3,9 @@
 //! settings and sent to the device actor at once.
 
 use chixie_rs_core::chixie3_devices;
-use chixie_rs_core::device::{Command, DeviceHandle, Pen};
-use chixie_rs_core::gcode::{DeviceProfile, DeviceType, Firmware};
-use chixie_rs_core::grbl::MachineSettings;
+use chixie_rs_device::device::{Command, DeviceHandle, Pen};
+use chixie_rs_core::gcode::{DeviceProfile, DeviceType, EndPosition, Firmware};
+use chixie_rs_device::grbl::MachineSettings;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
@@ -221,6 +221,15 @@ impl DeviceParams {
                 }))
             })
         });
+        let w3 = this.clone();
+        let end = Button::new("end-pos").small().outline().w_full().label(p.end_position.label()).dropdown_caret(true).dropdown_menu(move |m, _w, _cx| {
+            [EndPosition::Origin, EndPosition::OriginLeft { mm: EndPosition::ORIGIN_LEFT_MM }, EndPosition::Stay].into_iter().fold(m, |m, e| {
+                let this = w3.clone();
+                m.item(PopupMenuItem::new(e.label()).checked(e == p.end_position).on_click(move |_, _w, cx| {
+                    let _ = this.update(cx, |v, cx| v.edit(cx, |p| p.end_position = e));
+                }))
+            })
+        });
         let servo = p.device_type == DeviceType::ServoPenUp;
         let num = |f: F| {
             let (_, l, unit, ..) = NUMS.iter().find(|n| n.0 == f).copied().expect("field");
@@ -255,6 +264,7 @@ impl DeviceParams {
                     .child(row("落笔指令", Input::new(&self.custom_down).small().into_any_element()))
             })
             .child(div().text_xs().text_color(muted).child(format!("抬笔：{}　落笔：{}", p.pen_up_cmd(), p.pen_down_cmd())))
+            .child(row("写完位置", end.into_any_element()))
             .child(div().pt_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("坐标方向"))
             .child(
                 h_flex()

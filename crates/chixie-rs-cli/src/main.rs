@@ -3,7 +3,8 @@ mod fake_grbl;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chixie_rs_core::{api, calibration, config, discovery, esp3d, gcode, grbl, handwriting, layout, transport};
+use chixie_rs_core::{api, calibration, config, gcode, handwriting, layout};
+use chixie_rs_device::{discovery, esp3d, grbl, transport};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -242,6 +243,7 @@ fn print_progress(e: grbl::StreamEvent) {
         grbl::StreamEvent::Progress { done, total } => eprint!("\r{done}/{total}"),
         grbl::StreamEvent::Status(_) => {}
         grbl::StreamEvent::Message(m) => eprint!("\n{m}\n"),
+        grbl::StreamEvent::Resynced { lost } => eprint!("\nresynced: {lost} lost ack(s)\n"),
     }
 }
 

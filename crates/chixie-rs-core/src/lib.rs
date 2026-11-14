@@ -1,4 +1,4 @@
-//! Device communication for ChiXie writing/plotting machines.
+//! chixie-rs core: documents, layout, G-code, fonts, backend API and settings.
 //! Protocol notes: `docs/protocol.md`.
 
 pub mod api;
@@ -8,19 +8,14 @@ pub mod chixie3_templates;
 pub mod config;
 pub mod credentials;
 pub mod deformation;
-pub mod device;
-pub mod discovery;
 pub mod editor;
-pub mod esp3d;
 pub mod font;
 pub mod font_store;
 pub mod gcode;
-pub mod grbl;
 pub mod handwriting;
 pub mod layout;
 pub mod session;
 pub mod template;
-pub mod transport;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

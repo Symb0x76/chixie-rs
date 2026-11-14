@@ -69,8 +69,8 @@ fn main() {
     };
 
     let delay = std::env::var("CHIXIE_RS_SIM_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(if autotest { 0 } else { 3 });
-    let opener = if fake { sim::opener(Duration::from_millis(delay)) } else { chixie_rs_core::device::default_opener() };
-    let (device, device_events, _device_join) = chixie_rs_core::device::spawn(opener);
+    let opener = if fake { sim::opener(Duration::from_millis(delay)) } else { chixie_rs_device::device::default_opener() };
+    let (device, device_events, _device_join) = chixie_rs_device::device::spawn(opener);
 
     gpui_kit::application().with_assets(icons::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
@@ -227,14 +227,24 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChixieRsApp>, cx: &mut App)
         cx.update(|cx| {
             let profile = cx.global::<AppState>().settings.device.profile.clone();
             let pages = app.read(cx).doc.read(cx).document().pages.iter().map(|p| chixie_rs_core::gcode::emit(p, &profile)).collect();
-            device.update(cx, |d, cx| d.run(chixie_rs_core::device::Job { pages }, cx));
+            device.update(cx, |d, cx| d.run(chixie_rs_device::device::Job { pages, first_page: 0 }, cx));
         });
-        let mut sheet_prompts = 0;
+        let (mut sheet_prompts, mut recoveries) = (0, 0);
         for _ in 0..300 {
             cx.background_executor().timer(pause(100)).await;
             let job = cx.update(|cx| device.read(cx).job);
             match job {
                 None => break,
+                // After a simulated USB drop (CHIXIE_RS_SIM_DROP_AT): re-zero and continue.
+                Some(j) if j.recovered.is_some() => {
+                    recoveries += 1;
+                    cx.update(|cx| {
+                        device.update(cx, |d, cx| {
+                            d.send(chixie_rs_device::device::Command::Zero);
+                            d.resume_job(cx);
+                        })
+                    });
+                }
                 Some(j) if j.awaiting.is_some() => {
                     sheet_prompts += 1;
                     let _ = cx.update_window(handle, |_, window, cx| {
@@ -249,12 +259,23 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChixieRsApp>, cx: &mut App)
         cx.update(|cx| {
             let d = device.read(cx);
             println!(
-                "AUTOTEST_DEVICE connected={connected:?} sheet_prompts={sheet_prompts} outcome={:?} job_running={} status={:?}",
+                "AUTOTEST_DEVICE connected={connected:?} sheet_prompts={sheet_prompts} recoveries={recoveries} outcome={:?} job_running={} status={:?}",
                 d.last_end,
                 d.job.is_some(),
                 d.summary()
             );
         });
+        // 巡边 (pen up, written area of the caret's page): runs without a dialog.
+        let _ = cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |a, cx| a.start_tool(app::PageTool::Patrol(chixie_rs_device::job::PatrolMode::Up, false), window, cx));
+        });
+        for _ in 0..100 {
+            cx.background_executor().timer(pause(100)).await;
+            if cx.update(|cx| device.read(cx).job.is_none()) {
+                break;
+            }
+        }
+        cx.update(|cx| println!("AUTOTEST_PATROL outcome={:?}", device.read(cx).last_end));
         // `SHOT_*` lines tell an outside script when to take a screenshot (state held 2.5 s).
         let shot = |name: &str| {
             use std::io::Write as _;

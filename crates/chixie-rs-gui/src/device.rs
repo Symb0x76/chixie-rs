@@ -3,10 +3,11 @@
 //! Job start / sheet change / stop prompts live in `app.rs` because they need the document.
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
-use chixie_rs_core::device::{Command, DeviceHandle, Dir, Event, Job, JobOutcome, Pen, Target};
-use chixie_rs_core::grbl::GrblStatus;
-use chixie_rs_core::transport::{self, PortInfo};
+use chixie_rs_device::device::{Command, DeviceHandle, Dir, Event, Job, JobOutcome, Pen, Target};
+use chixie_rs_device::grbl::{self, GrblStatus};
+use chixie_rs_device::transport::{self, PortInfo};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -31,6 +32,10 @@ pub struct JobState {
     pub paused: bool,
     /// Waiting for the user to put sheet `n` (0-based) in place.
     pub awaiting: Option<usize>,
+    /// The link dropped; the actor is on reconnect attempt `n`.
+    pub reconnecting: Option<u32>,
+    /// Back after a drop, waiting for 继续书写: resume line, and whether the board rebooted.
+    pub recovered: Option<(usize, bool)>,
 }
 
 impl JobState {
@@ -46,6 +51,8 @@ pub enum Notice {
     Warn(String),
     Error(String),
     AwaitingSheet(usize),
+    /// The board entered an alarm: toast with a 解锁 action.
+    Alarm(String),
 }
 
 pub struct DevicePanel {
@@ -65,8 +72,19 @@ pub struct DevicePanel {
     /// 0 = 连接与控制, 1 = 参数设置.
     pub tab: usize,
     pub params: Entity<DeviceParams>,
+    /// In an alarm episode (toast already shown), and the last `ALARM:n` text seen.
+    alarm: bool,
+    last_alarm: Option<String>,
+    /// Auto-connect is off until the user connects again (they pressed 断开).
+    auto_paused: bool,
+    /// Candidate ports at the last auto-connect attempt: retry only when this set changes, so
+    /// a port held by another program doesn't raise an error every few seconds.
+    auto_tried: Vec<String>,
     _subs: Vec<Subscription>,
 }
+
+/// How often auto-connect looks for a board while disconnected.
+const AUTO_CONNECT_EVERY: Duration = Duration::from_secs(2);
 
 impl DevicePanel {
     pub fn new(handle: DeviceHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -99,10 +117,47 @@ impl DevicePanel {
             console,
             tab: 0,
             params,
+            alarm: false,
+            last_alarm: None,
+            auto_paused: false,
+            auto_tried: Vec::new(),
             _subs: vec![sub, obs],
         };
         this.refresh_ports(cx);
+        this.auto_connect_loop(cx);
         this
+    }
+
+    /// While idle and disconnected, connect when a ChiXie USB board (or the chosen port) shows up.
+    fn auto_connect_loop(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTO_CONNECT_EVERY).await;
+                let Ok(wanted) = this.update(cx, |p, cx| {
+                    let on = cx.global::<AppState>().settings.device.auto_connect;
+                    on && !p.auto_paused && !p.is_connected() && !p.connecting && !p.busy()
+                }) else {
+                    return; // panel dropped
+                };
+                if !wanted {
+                    continue;
+                }
+                let ports = cx.background_executor().spawn(async { transport::list_ports().unwrap_or_default() }).await;
+                let _ = this.update(cx, |p, cx| {
+                    let found: Vec<String> =
+                        ports.iter().filter(|q| q.known_device || p.port.as_ref() == Some(&q.name)).map(|q| q.name.clone()).collect();
+                    let changed = found != p.auto_tried;
+                    p.auto_tried.clone_from(&found);
+                    p.ports = ports;
+                    if changed && !found.is_empty() {
+                        p.push_log(Dir::Tx, format!("（自动连接 {}）", found.join(", ")));
+                        p.connect(cx);
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     pub fn is_connected(&self) -> bool {
@@ -127,10 +182,12 @@ impl DevicePanel {
     pub fn connect(&mut self, cx: &mut Context<Self>) {
         let baud = cx.global::<AppState>().settings.device.baud;
         self.connecting = true;
+        self.auto_paused = false;
         self.handle.send(Command::Connect(Target::Serial { port: self.port.clone(), baud }));
         cx.notify();
     }
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
+        self.auto_paused = true;
         self.handle.send(Command::Disconnect);
         cx.notify();
     }
@@ -138,9 +195,18 @@ impl DevicePanel {
         self.handle.send(c);
     }
     pub fn run(&mut self, job: Job, cx: &mut Context<Self>) {
-        let pages = job.pages.len();
-        self.job = Some(JobState { page: 0, pages, done: 0, total: 0, paused: false, awaiting: None });
+        let (page, pages) = (job.first_page, job.first_page + job.pages.len());
+        self.job = Some(JobState { page, pages, done: 0, total: 0, paused: false, awaiting: None, reconnecting: None, recovered: None });
         self.handle.send(Command::Run(job));
+        cx.notify();
+    }
+    /// 继续书写 after a drop.
+    pub fn resume_job(&mut self, cx: &mut Context<Self>) {
+        if let Some(j) = &mut self.job {
+            j.recovered = None;
+            j.paused = false;
+        }
+        self.handle.send(Command::ResumeJob);
         cx.notify();
     }
     pub fn toggle_pause(&mut self, cx: &mut Context<Self>) {
@@ -200,21 +266,53 @@ impl DevicePanel {
                     p.connected = false;
                     cx.notify();
                 });
-                let was_job = self.job.take().is_some();
-                match (was_job, page, last_line) {
-                    (true, Some(p), Some(l)) => Notice::Warn(format!(
-                        "设备断开（{reason}）：第 {} 页停在第 {l} 行。请检查 USB 后重新连接（端口号可能变化，选「自动」即可）",
-                        p + 1
-                    )),
+                // Mid-job drops keep the job: the actor is reconnecting and will resume it.
+                match (self.job.as_mut(), page, last_line) {
+                    (Some(j), Some(p), Some(l)) => {
+                        j.reconnecting = Some(0);
+                        j.recovered = None;
+                        Notice::Warn(format!("设备断开（{reason}）：第 {} 页停在第 {l} 行。正在自动重连，请检查 USB 线和电源", p + 1))
+                    }
                     _ if reason == "closed" => Notice::Info("已断开设备".into()),
                     _ => Notice::Warn(format!("设备断开：{reason}")),
                 }
             }
-            Event::Status(s) => {
-                self.status = Some(s);
+            Event::Reconnecting { attempt } => {
+                if let Some(j) = &mut self.job {
+                    j.reconnecting = Some(attempt);
+                }
                 Notice::None
             }
+            Event::Recovered { page, line, rebooted } => {
+                if let Some(j) = &mut self.job {
+                    // A pending sheet prompt is asked again after the resume.
+                    (j.reconnecting, j.recovered, j.awaiting, j.page, j.done) = (None, Some((line, rebooted)), None, page, line);
+                }
+                Notice::Warn(if rebooted {
+                    "设备已重新连接，但控制板重启过、坐标已丢失：请把笔移回纸张原点，点「设为原点」，再点「继续书写」".into()
+                } else {
+                    format!("设备已重新连接，可从第 {} 页第 {line} 行附近继续书写", page + 1)
+                })
+            }
+            Event::Status(s) => {
+                let alarm = s.state.starts_with("Alarm");
+                self.status = Some(s);
+                if alarm == self.alarm {
+                    Notice::None
+                } else {
+                    self.alarm = alarm;
+                    let why = self.last_alarm.take();
+                    match why {
+                        _ if !alarm => Notice::None,
+                        Some(w) => Notice::Alarm(format!("设备报警：{w}")),
+                        None => Notice::Alarm("设备处于报警状态，需要解锁后才能运动".into()),
+                    }
+                }
+            }
             Event::Log { dir, line } => {
+                if dir == Dir::Rx && grbl::alarm_code(&line).is_some() {
+                    self.last_alarm = Some(grbl::explain(&line));
+                }
                 self.push_log(dir, line);
                 Notice::None
             }
@@ -235,7 +333,7 @@ impl DevicePanel {
                 self.last_end = Some(outcome.clone());
                 match outcome {
                     JobOutcome::Done => Notice::Info("书写完成".into()),
-                    JobOutcome::Stopped => Notice::Warn(format!("已停止（第 {} 页，第 {line} 行），笔已抬起并回到原点", page + 1)),
+                    JobOutcome::Stopped => Notice::Warn(format!("已停止（第 {} 页，第 {line} 行），笔已抬起", page + 1)),
                     JobOutcome::Failed(e) => Notice::Error(format!("书写出错（第 {} 页，第 {line} 行）：{e}", page + 1)),
                 }
             }
@@ -249,6 +347,10 @@ impl DevicePanel {
             Event::Error(e) => {
                 self.connecting = false;
                 Notice::Error(e)
+            }
+            Event::Resynced { page, lost } => {
+                self.push_log(Dir::Rx, format!("（第 {} 页：{lost} 个应答丢失，已自动同步）", page + 1));
+                Notice::Warn(format!("检测到设备应答丢失（{lost} 行），已自动同步，书写继续"))
             }
         };
         cx.notify();
@@ -318,7 +420,9 @@ impl DevicePanel {
 
     #[inline(never)]
     fn control_section(&self, cx: &mut Context<Self>) -> AnyElement {
-        let enabled = self.is_connected() && !self.busy();
+        // Also usable while a recovered job waits: the user jogs back to the origin and zeros.
+        let recovering = self.job.is_some_and(|j| j.recovered.is_some());
+        let enabled = self.is_connected() && (!self.busy() || recovering);
         let jog = |id: &'static str, icon: IconName, dx: f32, dy: f32| {
             Button::new(id).small().icon(icon).disabled(!enabled).on_click(cx.listener(move |t, _: &ClickEvent, _w, _cx| t.jog(dx, dy)))
         };
@@ -375,10 +479,14 @@ impl DevicePanel {
             return div().text_sm().text_color(muted).child("在「设备」选项卡点「开始书写」").into_any_element();
         };
         let pct = j.percent();
-        let label = match j.awaiting {
-            Some(n) => format!("等待换纸：第 {} 页", n + 1),
-            None => format!("第 {}/{} 页 · {}/{} 行 · {pct:.0}%{}", j.page + 1, j.pages, j.done, j.total, if j.paused { " · 已暂停" } else { "" }),
+        let label = match (j.reconnecting, j.recovered, j.awaiting) {
+            (Some(n), ..) => format!("设备断开，正在自动重连…（第 {n} 次）"),
+            (_, Some((_, true)), _) => "控制板重启过：请把笔移回纸张原点，点「设为原点」后继续".into(),
+            (_, Some((line, false)), _) => format!("已重新连接：将从第 {} 页第 {line} 行附近继续", j.page + 1),
+            (_, _, Some(n)) => format!("等待换纸：第 {} 页", n + 1),
+            _ => format!("第 {}/{} 页 · {}/{} 行 · {pct:.0}%{}", j.page + 1, j.pages, j.done, j.total, if j.paused { " · 已暂停" } else { "" }),
         };
+        let interrupted = j.reconnecting.is_some() || j.recovered.is_some();
         v_flex()
             .gap_2()
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("书写任务"))
@@ -387,10 +495,16 @@ impl DevicePanel {
             .child(
                 h_flex()
                     .gap_2()
-                    .when(j.awaiting.is_some(), |el| {
+                    .when_some(j.recovered, |el, (_, rebooted)| {
+                        el.when(rebooted, |el| {
+                            el.child(Button::new("re-zero").small().label("设为原点").on_click(cx.listener(|t, _: &ClickEvent, _w, _cx| t.send(Command::Zero))))
+                        })
+                        .child(Button::new("resume-job").small().primary().label("继续书写").on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.resume_job(cx))))
+                    })
+                    .when(j.awaiting.is_some() && !interrupted, |el| {
                         el.child(Button::new("next-sheet").small().primary().label("已换纸，继续").on_click(cx.listener(|t, _: &ClickEvent, _w, cx| t.next_sheet(cx))))
                     })
-                    .when(j.awaiting.is_none(), |el| {
+                    .when(j.awaiting.is_none() && !interrupted, |el| {
                         el.child(Button::new("pause").small().label(if j.paused { "继续" } else { "暂停" }).on_click(cx.listener(
                             |t, _: &ClickEvent, _w, cx| t.toggle_pause(cx),
                         )))

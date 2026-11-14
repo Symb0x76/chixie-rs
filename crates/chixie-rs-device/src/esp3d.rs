@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use reqwest::blocking::{Client, multipart};
 
-use crate::Result;
+use chixie_rs_core::Result;
 
 /// SD folder the old app uses for tasks.
 pub const TASK_DIR: &str = "/chixie_task";

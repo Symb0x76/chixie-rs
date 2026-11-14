@@ -2,10 +2,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use crate::{Error, Result};
+pub use chixie_rs_core::config::DEFAULT_BAUD;
+use chixie_rs_core::{Error, Result};
 
-/// Verified on Grbl_ESP32 1.3a board (CH340), 2026-11-06.
-pub const DEFAULT_BAUD: u32 = 115_200;
 pub const DEFAULT_TELNET_PORT: u16 = 23;
 
 /// USB-serial chips the old app auto-selects.
