@@ -250,6 +250,10 @@ impl DevicePanel {
                 self.connecting = false;
                 Notice::Error(e)
             }
+            Event::Resynced { page, lost } => {
+                self.push_log(Dir::Rx, format!("（第 {} 页：{lost} 个应答丢失，已自动同步）", page + 1));
+                Notice::Warn(format!("检测到设备应答丢失（{lost} 行），已自动同步，书写继续"))
+            }
         };
         cx.notify();
         notice

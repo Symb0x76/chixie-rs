@@ -23,8 +23,11 @@ pub struct Control {
     paused: AtomicBool,
     /// Realtime bytes (`!`, `~`, `0x18`, …) to inject ahead of the line queue.
     realtime: Mutex<Vec<u8>>,
+    /// Give up when no line has been acknowledged for this long (status reports don't count).
     pub response_timeout: Duration,
-    /// Send `?` this often while streaming; `None` disables polling.
+    /// Lines outstanding, no ack for this long and the board reports `Idle` → resync.
+    pub stall_after: Duration,
+    /// Send `?` this often while streaming; `None` disables polling (and stall detection).
     pub status_interval: Option<Duration>,
 }
 
@@ -35,6 +38,7 @@ impl Default for Control {
             paused: AtomicBool::new(false),
             realtime: Mutex::new(Vec::new()),
             response_timeout: Duration::from_secs(60),
+            stall_after: Duration::from_secs(5),
             status_interval: Some(Duration::from_millis(250)),
         }
     }
@@ -119,6 +123,8 @@ pub struct GrblStatus {
     pub wpos: Option<[f32; 3]>,
     /// Current feed (mm/min) from `FS:` or `F:`.
     pub feed: Option<f32>,
+    /// `Bf:` (free planner blocks, free RX bytes); only when the board's `$10` mask enables it.
+    pub buf: Option<(u16, u16)>,
 }
 
 impl GrblStatus {
@@ -136,6 +142,7 @@ impl GrblStatus {
                 "MPos" => st.mpos = xyz(v),
                 "WPos" => st.wpos = xyz(v),
                 "FS" | "F" => st.feed = v.split(',').next().and_then(|n| n.parse().ok()),
+                "Bf" => st.buf = v.split_once(',').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))),
                 _ => {}
             }
         }
@@ -151,6 +158,9 @@ pub enum StreamEvent {
     Status(GrblStatus),
     /// Any other non-`ok` line from the controller (`[MSG:…]`, echoes, …).
     Message(String),
+    /// A stall was detected and `lost` acknowledgements were written off (the board had
+    /// already consumed those lines).
+    Resynced { lost: usize },
 }
 
 /// Strip comments/whitespace; returns None for empty lines.
@@ -203,8 +213,15 @@ fn check_line(l: &str, line: usize) -> Result<()> {
 /// `on_event` gets `Progress` after each acknowledged line, `Status` for each `?` report
 /// (polled every `ctl.status_interval`), and `Message` for other controller output.
 /// Realtime bytes queued on `ctl` are written ahead of lines; while `ctl.is_paused()` no new
-/// lines are sent. The response timeout only counts silence while lines are outstanding and the
-/// job isn't paused (status reports count as traffic).
+/// lines are sent.
+///
+/// Lost acknowledgements (seen on Telnet): when lines are outstanding, nothing was acked for
+/// `ctl.stall_after` and a fresh status says `Idle`, the board has nothing left to run, so the
+/// missing `ok`s were lost. If the status carries `Bf:` with an empty RX buffer that is proof
+/// enough; otherwise a `$G` marker is sent and its reply (Grbl handles RX strictly in order)
+/// proves every earlier line was consumed. The outstanding lines are then counted as acked
+/// (`StreamEvent::Resynced`). `ctl.response_timeout` without any ack (not paused, not in a
+/// hold) is an error; status reports don't reset it.
 pub fn stream<'a>(
     link: &mut dyn Link,
     lines: impl IntoIterator<Item = &'a str>,
@@ -216,8 +233,11 @@ pub fn stream<'a>(
     let mut in_flight: VecDeque<usize> = VecDeque::new(); // byte length of each unacked line
     let mut sent = 0;
     let mut acked = 0;
-    let mut last_rx = Instant::now();
+    let mut last_ack = Instant::now();
     let mut last_poll: Option<Instant> = None;
+    // Latest status state, and whether it arrived after the latest ack.
+    let mut state = String::new();
+    let mut fresh_status: Option<GrblStatus> = None;
 
     while acked < total {
         if ctl.cancel.load(Ordering::Relaxed) {
@@ -248,27 +268,77 @@ pub fn stream<'a>(
                 check_line(&l, acked + 1)?;
                 in_flight.pop_front();
                 acked += 1;
-                last_rx = Instant::now();
+                last_ack = Instant::now();
+                fresh_status = None;
                 on_event(StreamEvent::Progress { done: acked, total });
             }
             Some(l) => {
                 check_line(&l, acked + 1)?;
-                last_rx = Instant::now();
                 match GrblStatus::parse(&l) {
-                    Some(st) => on_event(StreamEvent::Status(st)),
+                    Some(st) => {
+                        state.clone_from(&st.state);
+                        fresh_status = Some(st.clone());
+                        on_event(StreamEvent::Status(st));
+                    }
                     None => {
                         log::debug!("grbl: {l}");
                         on_event(StreamEvent::Message(l));
                     }
                 }
             }
-            None if !ctl.is_paused() && last_rx.elapsed() > ctl.response_timeout => {
-                return Err(Error::Timeout);
+            None => {
+                let quiet = last_ack.elapsed();
+                let stalled = !in_flight.is_empty()
+                    && !ctl.is_paused()
+                    && quiet > ctl.stall_after
+                    && fresh_status.as_ref().is_some_and(|s| s.state == "Idle");
+                if stalled {
+                    let rx_empty = fresh_status.as_ref().and_then(|s| s.buf).is_some_and(|(_, rx)| rx as usize >= RX_BUFFER_SIZE - 1);
+                    let late = if rx_empty { 0 } else { probe_consumed(link, ctl, acked, &mut on_event)? };
+                    // Acks that arrived during the probe were real; the rest were lost.
+                    for _ in 0..late.min(in_flight.len()) {
+                        in_flight.pop_front();
+                        acked += 1;
+                    }
+                    let lost = in_flight.len();
+                    log::warn!("grbl: stall after line {acked}, {lost} ack(s) lost; resynced");
+                    in_flight.clear();
+                    acked += lost;
+                    last_ack = Instant::now();
+                    fresh_status = None;
+                    on_event(StreamEvent::Resynced { lost });
+                    on_event(StreamEvent::Progress { done: acked, total });
+                } else if !ctl.is_paused() && !state.starts_with("Hold") && quiet > ctl.response_timeout {
+                    return Err(Error::Timeout);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Send a `$G` marker and wait for its `[GC:…]` reply and `ok`. Returns how many plain `ok`s
+/// (late acks of earlier lines) arrived before the marker's reply.
+fn probe_consumed(link: &mut dyn Link, ctl: &Control, acked: usize, on_event: &mut impl FnMut(StreamEvent)) -> Result<usize> {
+    link.write_all(b"$G\n")?;
+    let deadline = Instant::now() + ctl.stall_after;
+    let (mut late, mut marker) = (0, false);
+    while Instant::now() < deadline {
+        match link.read_line()? {
+            Some(l) if l == "ok" && marker => return Ok(late),
+            Some(l) if l == "ok" => late += 1,
+            Some(l) if l.starts_with("[GC:") => marker = true,
+            Some(l) => {
+                check_line(&l, acked + 1)?;
+                match GrblStatus::parse(&l) {
+                    Some(st) => on_event(StreamEvent::Status(st)),
+                    None => on_event(StreamEvent::Message(l)),
+                }
             }
             None => {}
         }
     }
-    Ok(())
+    Err(Error::Timeout)
 }
 
 /// In-memory Grbl stand-in shared by this module's and `device`'s tests.
@@ -297,6 +367,8 @@ pub(crate) mod fake {
         pub status_q: VecDeque<String>,
         /// Replies queued when a given line is received (before its `ok`), like `$$`.
         pub respond: Vec<(String, Vec<String>)>,
+        /// 1-based received-line numbers whose `ok` is swallowed (lost on the wire).
+        pub drop_ok: Vec<usize>,
     }
 
     impl Default for Fake {
@@ -312,7 +384,8 @@ pub(crate) mod fake {
                 status: "<Idle|MPos:0.000,0.000,0.000|FS:0,0>".into(),
                 drop_after: None,
                 status_q: VecDeque::new(),
-                respond: Vec::new(),
+                respond: vec![("$G".into(), vec!["[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]".into()])],
+                drop_ok: Vec::new(),
             }
         }
     }
@@ -342,8 +415,11 @@ pub(crate) mod fake {
             if let Some(r) = self.replies.pop_front() {
                 return Ok(Some(r));
             }
-            if self.pending.pop_front().is_some() {
+            while self.pending.pop_front().is_some() {
                 self.received += 1;
+                if self.drop_ok.contains(&self.received) {
+                    continue;
+                }
                 let r = if Some(self.received) == self.fail_on { "error:20" } else { "ok" };
                 return Ok(Some(r.into()));
             }
@@ -465,6 +541,67 @@ mod tests {
         // Hold then cycle-start were injected, in that order.
         let rt: Vec<u8> = f.realtime.iter().copied().filter(|b| *b != realtime::STATUS).collect();
         assert_eq!(rt, vec![realtime::FEED_HOLD, realtime::CYCLE_START]);
+    }
+
+    fn fast_stall() -> Control {
+        Control {
+            status_interval: Some(Duration::from_millis(5)),
+            stall_after: Duration::from_millis(50),
+            response_timeout: Duration::from_millis(400),
+            ..Default::default()
+        }
+    }
+
+    fn run_collect(f: &mut Fake, n: usize, ctl: &Control) -> (Result<()>, Vec<StreamEvent>) {
+        let gcode: Vec<String> = (0..n).map(|i| format!("G1 X{i}.000 Y{i}.000 F3000")).collect();
+        let mut evs = Vec::new();
+        let r = stream(f, gcode.iter().map(String::as_str), ctl, |e| {
+            if !matches!(e, StreamEvent::Status(_)) {
+                evs.push(e)
+            }
+        });
+        (r, evs)
+    }
+
+    #[test]
+    fn lost_ok_resyncs_with_marker() {
+        let mut f = Fake { drop_ok: vec![7], ..Default::default() };
+        let (r, evs) = run_collect(&mut f, 10, &fast_stall());
+        r.unwrap();
+        assert!(evs.contains(&StreamEvent::Resynced { lost: 1 }), "{evs:?}");
+        assert_eq!(evs.last(), Some(&StreamEvent::Progress { done: 10, total: 10 }));
+        assert!(f.lines.contains(&"$G".to_string()));
+    }
+
+    #[test]
+    fn lost_ok_resyncs_from_bf_without_marker() {
+        let mut f = Fake { drop_ok: vec![3], status: "<Idle|MPos:0,0,0|Bf:15,128>".into(), ..Default::default() };
+        let (r, evs) = run_collect(&mut f, 5, &fast_stall());
+        r.unwrap();
+        assert!(evs.contains(&StreamEvent::Resynced { lost: 1 }));
+        assert!(!f.lines.contains(&"$G".to_string()), "marker sent although Bf proved an empty buffer");
+    }
+
+    #[test]
+    fn running_board_is_not_a_stall() {
+        // Board keeps reporting Run and never acks: no resync, the hard timeout fires instead.
+        let mut f = Fake { drop_ok: vec![2], status: "<Run|MPos:0,0,0>".into(), ..Default::default() };
+        let (r, evs) = run_collect(&mut f, 4, &fast_stall());
+        assert!(matches!(r, Err(Error::Timeout)), "{r:?}");
+        assert!(!evs.iter().any(|e| matches!(e, StreamEvent::Resynced { .. })));
+    }
+
+    #[test]
+    fn silent_board_times_out() {
+        // Status replies alone must not keep a job without acks alive.
+        let mut f = Fake { drop_ok: vec![1, 2, 3, 4], respond: Vec::new(), status: "<Idle|MPos:0,0,0>".into(), ..Default::default() };
+        let (r, _) = run_collect(&mut f, 4, &fast_stall());
+        assert!(matches!(r, Err(Error::Timeout)), "{r:?}");
+    }
+
+    #[test]
+    fn parses_buffer_field() {
+        assert_eq!(GrblStatus::parse("<Idle|MPos:0,0,0|Bf:15,127>").unwrap().buf, Some((15, 127)));
     }
 
     #[test]

@@ -97,6 +97,8 @@ pub enum Event {
     Error(String),
     /// `$$` settings (reply to `Command::QueryMachine`).
     Machine(MachineSettings),
+    /// The stream stalled on lost acknowledgements and recovered by itself.
+    Resynced { page: usize, lost: usize },
 }
 
 pub type BoxLink = Box<dyn Link + Send>;
@@ -318,6 +320,7 @@ impl Actor {
                     }
                     StreamEvent::Status(st) => Event::Status(st),
                     StreamEvent::Message(line) => Event::Log { dir: Dir::Rx, line },
+                    StreamEvent::Resynced { lost } => Event::Resynced { page, lost },
                 };
                 let _ = ev.send_blocking(out);
             });

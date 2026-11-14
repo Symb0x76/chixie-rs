@@ -243,6 +243,7 @@ fn print_progress(e: grbl::StreamEvent) {
         grbl::StreamEvent::Progress { done, total } => eprint!("\r{done}/{total}"),
         grbl::StreamEvent::Status(_) => {}
         grbl::StreamEvent::Message(m) => eprint!("\n{m}\n"),
+        grbl::StreamEvent::Resynced { lost } => eprint!("\nresynced: {lost} lost ack(s)\n"),
     }
 }
 
