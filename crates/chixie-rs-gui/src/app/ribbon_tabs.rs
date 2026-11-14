@@ -11,7 +11,8 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{ChixieRsApp, JobScope, Stage, fmt_num};
+use super::{ChixieRsApp, JobScope, PageTool, Stage, fmt_num};
+use chixie_rs_device::job::PatrolMode;
 use crate::doc_view::{self, DocView};
 use crate::ribbon::{self, big, big_menu, group, small, stack};
 use crate::state::AppState;
@@ -359,6 +360,42 @@ impl ChixieRsApp {
                             t.device.update(cx, |d, cx| d.next_sheet(cx))
                         })))
                     }),
+                None,
+            ))
+            .child(group(
+                cx,
+                "page-tools",
+                "巡边",
+                h_flex()
+                    .gap_0p5()
+                    .child(
+                        big("patrol", "巡边", IconName::Square)
+                            .disabled(!connected || running)
+                            .tooltip("抬笔沿书写区域走一圈，检查纸张位置")
+                            .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.start_tool(PageTool::Patrol(PatrolMode::Up, false), w, cx))),
+                    )
+                    .child(stack([
+                        {
+                            let this = cx.entity().downgrade();
+                            small("patrol-more", "巡边方式", IconName::ChevronDown)
+                                .disabled(!connected || running)
+                                .dropdown_menu(move |m, _w, _cx| {
+                                    let combos = [false, true].into_iter().flat_map(|t| PatrolMode::ALL.into_iter().map(move |m| (m, t)));
+                                    combos.fold(m, |m, (mode, template)| {
+                                        let this = this.clone();
+                                        let range = if template { "模板框线区域" } else { "实际书写区域" };
+                                        m.item(PopupMenuItem::new(format!("{} · {range}", mode.label())).on_click(move |_, w, cx| {
+                                            let _ = this.update(cx, |t, cx| t.start_tool(PageTool::Patrol(mode, template), w, cx));
+                                        }))
+                                    })
+                                })
+                                .into_any_element()
+                        },
+                        small("ruling", "绘制框架线", IconName::Grid3x3)
+                            .disabled(!connected || running)
+                            .on_click(cx.listener(|t, _: &ClickEvent, w, cx| t.start_tool(PageTool::Ruling, w, cx)))
+                            .into_any_element(),
+                    ])),
                 None,
             ))
             .child(group(

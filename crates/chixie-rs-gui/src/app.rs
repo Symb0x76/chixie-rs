@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use chixie_rs_core::config::import_chixie3;
 use chixie_rs_device::device::{Command as DevCommand, DeviceHandle, Event as DevEvent, Job};
+use chixie_rs_device::job::{self, PatrolMode};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use chixie_rs_core::editor::EditDoc;
 use chixie_rs_core::gcode;
@@ -42,6 +43,14 @@ pub const TAB_DEVICE: usize = 3;
 const DRAFT_EVERY: Duration = Duration::from_secs(2);
 /// Plotter travel on the verified board ($130/$131 = 300 mm).
 const TRAVEL_MM: f32 = 300.0;
+
+/// 工作区巡边 / 绘制框架线 on the caret's page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageTool {
+    /// Mode, and range: `true` = 模板框线区域, `false` = 实际书写区域.
+    Patrol(PatrolMode, bool),
+    Ruling,
+}
 
 /// Which pages a writing job covers; "here" is the page holding the caret.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -612,6 +621,50 @@ impl ChixieRsApp {
     }
 
     // ---- device ----
+
+    /// Patrol (pen up: straight away; it leaves no mark) or draw the ruling (confirmed first).
+    pub(crate) fn start_tool(&mut self, tool: PageTool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.device.read(cx).busy() {
+            window.push_notification(Notification::warning("当前有书写任务正在进行中，请先结束任务"), cx);
+            return;
+        }
+        let doc = self.doc.read(cx).document();
+        let here = self.doc.read(cx).caret_page().min(doc.pages.len().saturating_sub(1));
+        let Some(page) = doc.pages.get(here) else { return };
+        let profile = cx.global::<AppState>().settings.device.profile.clone();
+        let (gcode, title) = match tool {
+            PageTool::Patrol(mode, template) => {
+                let area = if template { job::template_area(page) } else { job::written_area(page) };
+                let Some(r) = area else {
+                    let msg = if template { "该页没有模板框线，无法巡边" } else { "没有书写内容，无法巡边" };
+                    window.push_notification(Notification::warning(msg), cx);
+                    return;
+                };
+                (job::patrol(r, mode, &profile), (mode != PatrolMode::Up).then_some(format!("是否开始{}？（请确保已经设置过原点）", mode.label())))
+            }
+            PageTool::Ruling => {
+                if page.guides.is_empty() {
+                    window.push_notification(Notification::warning("该页没有模板框线可绘制"), cx);
+                    return;
+                }
+                (job::ruling(&page.guides, &profile), Some("是否开始绘制页面框架线？".to_string()))
+            }
+        };
+        self.show_pane = true;
+        let job = Job { pages: vec![gcode], first_page: here };
+        let Some(title) = title else {
+            self.device.update(cx, |d, cx| d.run(job, cx));
+            return;
+        };
+        let device = self.device.clone();
+        window.open_alert_dialog(cx, move |a, _w, _cx| {
+            let (device, job) = (device.clone(), job.clone());
+            a.title(title.clone()).description("笔会落在纸上。请确认纸张和原点。").confirm().ok_text("开始").on_ok(move |_, _w, cx| {
+                device.update(cx, |d, cx| d.run(job.clone(), cx));
+                true
+            })
+        });
+    }
 
     /// Confirm extents, then stream the chosen pages (sheet change prompts in between).
     pub(crate) fn start_job(&mut self, scope: JobScope, window: &mut Window, cx: &mut Context<Self>) {

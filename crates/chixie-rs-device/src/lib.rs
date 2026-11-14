@@ -5,4 +5,5 @@ pub mod device;
 pub mod discovery;
 pub mod esp3d;
 pub mod grbl;
+pub mod job;
 pub mod transport;

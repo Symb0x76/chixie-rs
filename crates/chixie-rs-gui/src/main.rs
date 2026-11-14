@@ -265,6 +265,17 @@ fn run_autotest(handle: AnyWindowHandle, app: Entity<ChixieRsApp>, cx: &mut App)
                 d.summary()
             );
         });
+        // 巡边 (pen up, written area of the caret's page): runs without a dialog.
+        let _ = cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |a, cx| a.start_tool(app::PageTool::Patrol(chixie_rs_device::job::PatrolMode::Up, false), window, cx));
+        });
+        for _ in 0..100 {
+            cx.background_executor().timer(pause(100)).await;
+            if cx.update(|cx| device.read(cx).job.is_none()) {
+                break;
+            }
+        }
+        cx.update(|cx| println!("AUTOTEST_PATROL outcome={:?}", device.read(cx).last_end));
         // `SHOT_*` lines tell an outside script when to take a screenshot (state held 2.5 s).
         let shot = |name: &str| {
             use std::io::Write as _;
