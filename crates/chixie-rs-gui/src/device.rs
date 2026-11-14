@@ -3,6 +3,7 @@
 //! Job start / sheet change / stop prompts live in `app.rs` because they need the document.
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use chixie_rs_device::device::{Command, DeviceHandle, Dir, Event, Job, JobOutcome, Pen, Target};
 use chixie_rs_device::grbl::{self, GrblStatus};
@@ -74,8 +75,16 @@ pub struct DevicePanel {
     /// In an alarm episode (toast already shown), and the last `ALARM:n` text seen.
     alarm: bool,
     last_alarm: Option<String>,
+    /// Auto-connect is off until the user connects again (they pressed 断开).
+    auto_paused: bool,
+    /// Candidate ports at the last auto-connect attempt: retry only when this set changes, so
+    /// a port held by another program doesn't raise an error every few seconds.
+    auto_tried: Vec<String>,
     _subs: Vec<Subscription>,
 }
+
+/// How often auto-connect looks for a board while disconnected.
+const AUTO_CONNECT_EVERY: Duration = Duration::from_secs(2);
 
 impl DevicePanel {
     pub fn new(handle: DeviceHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -110,10 +119,45 @@ impl DevicePanel {
             params,
             alarm: false,
             last_alarm: None,
+            auto_paused: false,
+            auto_tried: Vec::new(),
             _subs: vec![sub, obs],
         };
         this.refresh_ports(cx);
+        this.auto_connect_loop(cx);
         this
+    }
+
+    /// While idle and disconnected, connect when a ChiXie USB board (or the chosen port) shows up.
+    fn auto_connect_loop(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTO_CONNECT_EVERY).await;
+                let Ok(wanted) = this.update(cx, |p, cx| {
+                    let on = cx.global::<AppState>().settings.device.auto_connect;
+                    on && !p.auto_paused && !p.is_connected() && !p.connecting && !p.busy()
+                }) else {
+                    return; // panel dropped
+                };
+                if !wanted {
+                    continue;
+                }
+                let ports = cx.background_executor().spawn(async { transport::list_ports().unwrap_or_default() }).await;
+                let _ = this.update(cx, |p, cx| {
+                    let found: Vec<String> =
+                        ports.iter().filter(|q| q.known_device || p.port.as_ref() == Some(&q.name)).map(|q| q.name.clone()).collect();
+                    let changed = found != p.auto_tried;
+                    p.auto_tried.clone_from(&found);
+                    p.ports = ports;
+                    if changed && !found.is_empty() {
+                        p.push_log(Dir::Tx, format!("（自动连接 {}）", found.join(", ")));
+                        p.connect(cx);
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     pub fn is_connected(&self) -> bool {
@@ -138,10 +182,12 @@ impl DevicePanel {
     pub fn connect(&mut self, cx: &mut Context<Self>) {
         let baud = cx.global::<AppState>().settings.device.baud;
         self.connecting = true;
+        self.auto_paused = false;
         self.handle.send(Command::Connect(Target::Serial { port: self.port.clone(), baud }));
         cx.notify();
     }
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
+        self.auto_paused = true;
         self.handle.send(Command::Disconnect);
         cx.notify();
     }

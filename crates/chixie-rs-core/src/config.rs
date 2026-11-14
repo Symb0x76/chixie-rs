@@ -36,6 +36,8 @@ pub struct DeviceSettings {
     pub baud: u32,
     pub last_port: Option<String>,
     pub last_ip: Option<String>,
+    /// Connect by itself when a ChiXie USB board (or `last_port`) appears.
+    pub auto_connect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -65,7 +67,7 @@ pub struct UiSettings {
 
 impl Default for DeviceSettings {
     fn default() -> Self {
-        Self { profile: DeviceProfile::default(), baud: DEFAULT_BAUD, last_port: None, last_ip: None }
+        Self { profile: DeviceProfile::default(), baud: DEFAULT_BAUD, last_port: None, last_ip: None, auto_connect: true }
     }
 }
 
