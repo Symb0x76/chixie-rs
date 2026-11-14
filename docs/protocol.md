@@ -183,6 +183,11 @@ Captures: `captures/{a2_pasted_deform_off,d_base_deform,d_shape_deform7}.gcode` 
 - ChiXie3's Telnet streaming stalls on long jobs: at ~44, ~752 and ~1682 lines, even with a 3 ms ack
   delay. After a stall, the only reliable reset is disconnect + restart. The first 2 lines (34 glyphs)
   were captured; every glyph fits the typed reference exactly (no per-glyph scale).
+  chixie-rs handles this case in `grbl::stream`: with lines outstanding, no ack for 5 s and a fresh
+  `Idle` status, the board has consumed everything, so the missing `ok`s were lost. An empty RX
+  buffer in `Bf:` proves it (only when `$10` enables the field); otherwise a `$G` marker is sent
+  and its `[GC:…]` + `ok` (Grbl answers RX strictly in order) proves it. The outstanding lines are
+  then counted as acked. Silence for 60 s without an ack (status reports don't count) fails the job.
 - **Line pitch ≈ 10.25 mm** (baseline means −0.31 → −10.56).
 - **Wrap:** 23 glyphs on line 1. The last one starts at x = 161.5 and the next would start at ≈ 169.
   That fits a writable width of ≈ 168 mm (A4 210 − 2×21). Whether the rule tests the glyph origin or
