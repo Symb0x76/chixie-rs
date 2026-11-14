@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/chixie-core", "crates/chixie-cli", "crates/chixie-gui"]
+members = ["crates/chixie-rs-core", "crates/chixie-rs-cli", "crates/chixie-rs-gui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.98"
 
 [workspace.dependencies]
-chixie-core = { path = "crates/chixie-core" }
+chixie-rs-core = { path = "crates/chixie-rs-core" }
 aes = "0.8"
 base64 = "0.23.1"
 cbc = "0.1"
@@ -24,9 +24,11 @@ sha2 = "0.10"
 thiserror = "2.0.21"
 # UI: gpui-kit bundles gpui (gpui-pre =0.3.11), gpui_platform and gpui-component 0.9.0 as
 # one coherent pin. Exact version only; bump deliberately and re-run the gpui identity check
-# (`cargo tree -p chixie-gui -i gpui-pre` must show exactly one instance).
+# (`cargo tree -p chixie-rs-gui -i gpui-pre` must show exactly one instance).
 gpui-kit = "=0.9.0"
 async-channel = "2"
 toml = "1"
 directories = "6"
 keyring = "4.2"
+# Font preview PNGs → ink masks. Same crate instance gpui already pulls in.
+image = { version = "0.25.10", default-features = false, features = ["png"] }

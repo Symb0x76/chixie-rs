@@ -1,0 +1,15 @@
+[package]
+name = "chixie-rs-cli"
+description = "chixie-rs command line"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "chixie-rs-cli"
+path = "src/main.rs"
+
+[dependencies]
+chixie-rs-core.workspace = true
+clap.workspace = true
+env_logger.workspace = true

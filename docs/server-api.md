@@ -41,7 +41,25 @@ Base host `https://chixie.com.cn/client_api/`. Envelope: `{status, msg, data, pa
   `{filter_tags:["chinese","english","Japanese","handwritten","standard","formula_symbol","scribble"],
   sort_rule:"collections", page_num:1, search_name:""}` → same `FontInfo` shape as collected.
   Omitting the tags/sort/search fields or using page 0 → HTTP 400.
+- Listing item fields (verified 2026-11-07): `id, font_name, character_number, collection_count,
+  content_preview (null so far), font_description, font_preview, permission, tags, type_name
+  ("中文6900"), username, created_at`. `tags` is a JSON array **encoded as a string**
+  (`"[\"中文字体\", \"手写字体\"]"`). `font_preview` is a public, no-auth PNG
+  `https://chixie.oss-cn-shanghai.aliyuncs.com/font_preview/font_<id>.png`: the font name written in
+  the font, black on opaque white, ~6600×2250, ~400 KB. Some ids have none (404).
+- `font/get_character_access` (strokes for chosen characters) → HTTP 404 `Not Found` now; whole-font
+  download is the only glyph source.
 - `user/heartbeat` req `{}` → `data:"ok"`. `ai/get_ai_account` req `{ai_type}` → xunfei keys.
+- `config/font_config` (captured 2026-11-08 through a proxy, `tools/capture/api_log.py`): **GET**
+  with the token as query parameter `?token=…` and as header `token`; sent once at start-up. →
+  `data {calling_mode:1, deform_range:1, default_font:1, default_english_font:1,
+  default_number_font:1, default_symbol_font:1}` (font ids for the 主线/英文/数字/符号 roles;
+  `calling_mode` = 字体调用 mode, `deform_range` = deformation level). The write call
+  (`FUtil.sync_user_font_config`, statically a POST of the same fields) was **not** triggered by
+  setting a default font, by browsing, or by quitting: request body **VERIFY**.
+- **Template library (主页 › 模板): no backend in ChiXie3 3.0.310.** The page never requests anything
+  (with or without the proxy); the "/12" page count is a fixed label in its Designer form.
+  chixie-rs needs new endpoints: see [cloud-api-proposal.md](cloud-api-proposal.md).
 
 ### Font payload format (decrypted, verified)
 

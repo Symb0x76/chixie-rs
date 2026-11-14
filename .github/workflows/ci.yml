@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # gpui needs X11/Wayland/Vulkan headers on Linux; serialport needs libudev; keyring needs
+      # D-Bus; Mesa's software Vulkan driver lets the GUI autotest run under xvfb.
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libdbus-1-dev libfontconfig-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libvulkan-dev mesa-vulkan-drivers libzstd-dev xvfb
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # Scripted GUI run against the fake backend and simulated Grbl (see crates/chixie-rs-gui/src/main.rs).
+      # Non-blocking until it has passed on each runner once (GPU/display availability differs).
+      - name: GUI autotest
+        continue-on-error: true
+        shell: bash
+        env:
+          CHIXIE_RS_AUTOTEST: "1"
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; else run=""; fi
+          $run ./target/debug/chixie-rs${{ runner.os == 'Windows' && '.exe' || '' }} | tee autotest.log
+          grep -q 'AUTOTEST_BACKSTAGE closed=Ok(true)' autotest.log
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: chixie-rs-${{ runner.os }}-debug
+          path: |
+            target/debug/chixie-rs${{ runner.os == 'Windows' && '.exe' || '' }}
+            target/debug/chixie-rs-cli${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error

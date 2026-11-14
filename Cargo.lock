@@ -900,16 +900,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "chixie-cli"
+name = "chixie-rs-cli"
 version = "0.1.0"
 dependencies = [
- "chixie-core",
+ "chixie-rs-core",
  "clap",
  "env_logger",
 ]
 
 [[package]]
-name = "chixie-core"
+name = "chixie-rs-core"
 version = "0.1.0"
 dependencies = [
  "aes 0.8.4",
@@ -930,13 +930,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "chixie-gui"
+name = "chixie-rs-gui"
 version = "0.1.0"
 dependencies = [
  "async-channel",
- "chixie-core",
+ "chixie-rs-core",
  "env_logger",
  "gpui-kit",
+ "image",
  "log",
  "serde",
  "serde_json",
